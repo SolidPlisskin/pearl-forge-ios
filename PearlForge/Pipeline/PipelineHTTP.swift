@@ -23,7 +23,12 @@ enum PipelineHTTP {
     /// Pulls the human-readable message out of an API error body, falling back
     /// to the start of the raw body.
     private static func readableMessage(from data: Data) -> String {
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        var parsed = try? JSONSerialization.jsonObject(with: data)
+        // Gemini sometimes wraps its error in a one-item list.
+        if let list = parsed as? [Any], let first = list.first {
+            parsed = first
+        }
+        if let json = parsed as? [String: Any] {
             // Anthropic: {"error": {"message": "..."}}
             if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
                 return message

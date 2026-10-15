@@ -4,19 +4,23 @@ import UniformTypeIdentifiers
 /// Record a thought, pick how much refinement, and hear it back in your voice.
 struct CreateView: View {
     let settings: SettingsModel
+    let polishers: PolishersModel
     let library: RecordingLibrary
-    let openSettings: () -> Void
+    let openTab: (AppTab) -> Void
 
     @State private var model = CreateModel()
     @State private var importing = false
     @State private var confirmingDiscard = false
     @FocusState private var editingRefined: Bool
 
-    /// Both keys saved and a voice chosen.
+    /// ElevenLabs set up with a voice chosen.
+    private var hasVoice: Bool {
+        settings.elevenLabsStatus != .notSet && !settings.selectedVoiceID.isEmpty
+    }
+
+    /// Everything needed to refine and speak a recording.
     private var isReady: Bool {
-        settings.elevenLabsStatus != .notSet
-            && settings.anthropicStatus != .notSet
-            && !settings.selectedVoiceID.isEmpty
+        hasVoice && polishers.activeChoice != nil
     }
 
     var body: some View {
@@ -80,9 +84,14 @@ struct CreateView: View {
 
     private var setupSection: some View {
         Section {
-            Label("Add your ElevenLabs and Anthropic keys and pick your voice before your first recording.",
-                  systemImage: "key")
-            Button("Open Settings", action: openSettings)
+            if !hasVoice {
+                Label("Add your ElevenLabs key and pick your voice in Settings.", systemImage: "key")
+                Button("Open Settings") { openTab(.settings) }
+            }
+            if polishers.activeChoice == nil {
+                Label("Choose the AI that polishes your thoughts in the AI tab.", systemImage: "sparkles")
+                Button("Open the AI tab") { openTab(.ai) }
+            }
         }
     }
 
@@ -182,7 +191,7 @@ struct CreateView: View {
                 }
             } else {
                 Button {
-                    Task { await model.refineAndSpeak(voiceID: settings.selectedVoiceID, library: library) }
+                    Task { await refineAndSpeak() }
                 } label: {
                     Text(model.errorMessage == nil ? "Refine & speak" : "Try again")
                         .font(.headline)
@@ -197,8 +206,8 @@ struct CreateView: View {
         } footer: {
             if let error = model.errorMessage {
                 Text(error).foregroundStyle(.red)
-            } else if isReady && !settings.selectedVoiceName.isEmpty {
-                Text("Speaking as \(settings.selectedVoiceName).")
+            } else if isReady, let choice = polishers.activeChoice {
+                Text("Polishing with \(polishers.label(for: choice)), speaking as \(settings.selectedVoiceName.isEmpty ? "your voice" : settings.selectedVoiceName).")
             }
         }
     }
@@ -242,7 +251,7 @@ struct CreateView: View {
                 }
             } else if model.errorMessage != nil {
                 Button("Try again") {
-                    Task { await model.refineAndSpeak(voiceID: settings.selectedVoiceID, library: library) }
+                    Task { await refineAndSpeak() }
                 }
             }
         } header: {
@@ -251,9 +260,14 @@ struct CreateView: View {
             if let error = model.errorMessage {
                 Text(error).foregroundStyle(.red)
             } else {
-                Text("Saved as pearl 1 in History (\(library.locationName)). Open it there to forge more versions.")
+                Text("Saved as pearl 1 in History (\(library.locationName)). Open it there to forge more versions, with any AI.")
             }
         }
+    }
+
+    private func refineAndSpeak() async {
+        guard let choice = polishers.activeChoice else { return }
+        await model.refineAndSpeak(voiceID: settings.selectedVoiceID, polisher: choice, library: library)
     }
 }
 
@@ -341,5 +355,5 @@ struct PlayerRow: View {
 }
 
 #Preview {
-    CreateView(settings: SettingsModel(), library: RecordingLibrary(), openSettings: {})
+    CreateView(settings: SettingsModel(), polishers: PolishersModel(), library: RecordingLibrary(), openTab: { _ in })
 }

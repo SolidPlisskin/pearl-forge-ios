@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// API keys (kept in the Keychain), the ElevenLabs voice to speak in, and
+/// The ElevenLabs key (kept in the Keychain), the voice to speak in, and
 /// where recordings are saved.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
@@ -74,39 +74,31 @@ struct SettingsView: View {
     private var keysSection: some View {
         Section {
             NavigationLink {
-                KeyEditorView(service: .elevenLabs, model: model)
+                KeyEditorView(target: .init(
+                    title: "ElevenLabs key",
+                    keysPageLabel: "Get your key at elevenlabs.io",
+                    keysPage: URL(string: "https://elevenlabs.io/app/settings/api-keys")!,
+                    isSaved: model.elevenLabsStatus != .notSet,
+                    save: { key, _ in if let key { try model.saveElevenLabsKey(key) } },
+                    remove: model.removeElevenLabsKey))
             } label: {
-                KeyStatusRow(title: "ElevenLabs", status: model.elevenLabsStatus)
+                KeyStatusRow(title: "ElevenLabs", subtitle: "Transcribing and your voice", status: model.elevenLabsStatus)
             }
-            NavigationLink {
-                KeyEditorView(service: .anthropic, model: model)
-            } label: {
-                KeyStatusRow(title: "Anthropic", status: model.anthropicStatus)
-            }
-            if hasFailedKey {
+            if case .failed = model.elevenLabsStatus {
                 Button("Check again") {
-                    Task { await model.recheckKeys() }
+                    Task { await model.loadVoices() }
                 }
             }
         } header: {
-            Text("API keys")
+            Text("API key")
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if case .failed(let message) = model.elevenLabsStatus {
                     Text(message).foregroundStyle(.red)
                 }
-                if case .failed(let message) = model.anthropicStatus {
-                    Text(message).foregroundStyle(.red)
-                }
-                Text("Kept in this iPhone's Keychain: never in the app's code, and never copied off this phone.")
+                Text("Kept in this iPhone's Keychain: never in the app's code, and never copied off this phone. Keys for the AI that polishes your thoughts are in the AI tab.")
             }
         }
-    }
-
-    private var hasFailedKey: Bool {
-        if case .failed = model.elevenLabsStatus { return true }
-        if case .failed = model.anthropicStatus { return true }
-        return false
     }
 
     private var voiceSection: some View {
@@ -155,40 +147,6 @@ struct SettingsView: View {
             }
         }
         .pickerStyle(.navigationLink)
-    }
-}
-
-/// One key's name and whether it's saved and working.
-private struct KeyStatusRow: View {
-    let title: String
-    let status: KeyStatus
-
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            statusView
-        }
-        // Keep the divider lined up with the row title, not the status label.
-        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-    }
-
-    @ViewBuilder
-    private var statusView: some View {
-        switch status {
-        case .notSet:
-            Text("Not set").foregroundStyle(.secondary)
-        case .saved:
-            Text("Saved").foregroundStyle(.secondary)
-        case .checking:
-            Text("Checking…").foregroundStyle(.secondary)
-        case .works:
-            Label("Works", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .failed:
-            Label("Not working", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-        }
     }
 }
 

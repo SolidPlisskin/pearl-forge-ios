@@ -10,9 +10,9 @@ enum KeyStatus: Equatable {
     case failed(String)
 }
 
-/// State behind the Settings screen: which keys are saved and working, the
-/// account's voices, and the chosen voice. Keys live in the Keychain; the voice
-/// choice isn't secret, so it lives in UserDefaults.
+/// State behind the Settings screen: the ElevenLabs key, the account's voices,
+/// and the chosen voice. The key lives in the Keychain; the voice choice isn't
+/// secret, so it lives in UserDefaults. AI polishing keys are in PolishersModel.
 @MainActor
 @Observable
 final class SettingsModel {
@@ -20,7 +20,6 @@ final class SettingsModel {
     static let voiceNameKey = "selectedVoiceName"
 
     private(set) var elevenLabsStatus: KeyStatus
-    private(set) var anthropicStatus: KeyStatus
     private(set) var voices: [Voice] = []
 
     var selectedVoiceID: String {
@@ -38,28 +37,14 @@ final class SettingsModel {
 
     init() {
         elevenLabsStatus = KeychainStore.read(.elevenLabsKey) == nil ? .notSet : .saved
-        anthropicStatus = KeychainStore.read(.anthropicKey) == nil ? .notSet : .saved
         selectedVoiceID = UserDefaults.standard.string(forKey: Self.voiceIDKey) ?? ""
         selectedVoiceName = UserDefaults.standard.string(forKey: Self.voiceNameKey) ?? ""
     }
 
-    /// Checks any saved key that hasn't been checked yet this launch.
+    /// Checks the saved key if it hasn't been checked yet this launch.
     func checkSavedKeys() async {
-        await withTaskGroup(of: Void.self) { group in
-            if elevenLabsStatus == .saved {
-                group.addTask { await self.loadVoices() }
-            }
-            if anthropicStatus == .saved {
-                group.addTask { await self.checkAnthropic() }
-            }
-        }
-    }
-
-    /// Re-checks both keys, e.g. after a network hiccup.
-    func recheckKeys() async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await self.loadVoices() }
-            group.addTask { await self.checkAnthropic() }
+        if elevenLabsStatus == .saved {
+            await loadVoices()
         }
     }
 
@@ -103,43 +88,6 @@ final class SettingsModel {
     private func refreshSelectedVoiceName() {
         if let voice = voices.first(where: { $0.id == selectedVoiceID }) {
             selectedVoiceName = voice.name
-        }
-    }
-
-    // MARK: Anthropic
-
-    /// Saves a newly typed key (if any) and the optional workspace ID, then
-    /// re-checks access.
-    func saveAnthropic(key: String?, workspaceID: String) throws {
-        if let key {
-            try KeychainStore.save(key, for: .anthropicKey)
-        }
-        if workspaceID.isEmpty {
-            KeychainStore.delete(.anthropicWorkspaceID)
-        } else {
-            try KeychainStore.save(workspaceID, for: .anthropicWorkspaceID)
-        }
-        anthropicStatus = .saved
-        Task { await checkAnthropic() }
-    }
-
-    func removeAnthropicKey() {
-        KeychainStore.delete(.anthropicKey)
-        anthropicStatus = .notSet
-    }
-
-    func checkAnthropic() async {
-        guard let key = KeychainStore.read(.anthropicKey) else {
-            anthropicStatus = .notSet
-            return
-        }
-        anthropicStatus = .checking
-        do {
-            let client = AnthropicClient(apiKey: key, workspaceID: KeychainStore.read(.anthropicWorkspaceID))
-            try await client.checkAccess()
-            anthropicStatus = .works
-        } catch {
-            anthropicStatus = .failed(error.localizedDescription)
         }
     }
 }

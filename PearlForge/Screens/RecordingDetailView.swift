@@ -6,6 +6,7 @@ struct RecordingDetailView: View {
     let entryID: String
     let library: RecordingLibrary
     let settings: SettingsModel
+    let polishers: PolishersModel
 
     @State private var player = AudioPlayback()
     @State private var showingForgeSheet = false
@@ -57,9 +58,9 @@ struct RecordingDetailView: View {
                 ForEach(entry.pearlsNewestFirst) { pearl in
                     NavigationLink {
                         PearlView(entryID: entry.id, pearlID: pearl.id, library: library,
-                                  settings: settings, player: player)
+                                  settings: settings, polishers: polishers, player: player)
                     } label: {
-                        PearlRow(pearl: pearl, text: entry.pearlTexts[pearl.id] ?? "")
+                        PearlRow(pearl: pearl, text: entry.pearlTexts[pearl.id] ?? "", polishers: polishers)
                     }
                 }
                 Button {
@@ -67,7 +68,8 @@ struct RecordingDetailView: View {
                 } label: {
                     Label("Forge a new pearl", systemImage: "sparkles")
                 }
-                .disabled(library.forging[entry.id] != nil || settings.selectedVoiceID.isEmpty)
+                .disabled(library.forging[entry.id] != nil || settings.selectedVoiceID.isEmpty
+                          || polishers.readyProviders.isEmpty)
             } header: {
                 Text("Pearls")
             } footer: {
@@ -91,10 +93,10 @@ struct RecordingDetailView: View {
             }
         }
         .sheet(isPresented: $showingForgeSheet) {
-            ForgeSheet(initialMode: entry.pearlsNewestFirst.first?.mode ?? .clean) { mode, notes in
+            ForgeSheet(initialMode: entry.pearlsNewestFirst.first?.mode ?? .clean, polishers: polishers) { mode, notes, polisher in
                 Task {
                     if let result = await library.forgeNewPearl(for: entry.id, mode: mode, notes: notes,
-                                                                voiceID: settings.selectedVoiceID) {
+                                                                polisher: polisher, voiceID: settings.selectedVoiceID) {
                         player.load(result.1, key: result.0.id.uuidString)
                         player.play()
                     }
@@ -110,15 +112,22 @@ struct RecordingDetailView: View {
     }
 }
 
-/// A pearl in the list: its number and mode, your request, and how it starts.
+/// A pearl in the list: its number, mode and AI, your request, and how it
+/// starts.
 private struct PearlRow: View {
     let pearl: Pearl
     let text: String
+    let polishers: PolishersModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Pearl \(pearl.number) · \(pearl.mode.title)")
                 .font(.headline)
+            if let by = polishedBy(pearl, polishers: polishers) {
+                Text(by)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let notes = pearl.notes, !notes.isEmpty {
                 Text("“\(notes)”")
                     .font(.subheadline)
@@ -136,4 +145,12 @@ private struct PearlRow: View {
         }
         .padding(.vertical, 2)
     }
+}
+
+/// "Claude · Claude Opus 5.5" for a pearl, when known.
+@MainActor
+func polishedBy(_ pearl: Pearl, polishers: PolishersModel) -> String? {
+    guard let model = pearl.refinedBy else { return nil }
+    guard let provider = pearl.polisher.flatMap(PolisherProvider.init(rawValue:)) else { return model }
+    return "\(provider.name) · \(polishers.modelName(model, for: provider))"
 }

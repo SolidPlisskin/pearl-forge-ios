@@ -93,7 +93,7 @@ final class RecordingLibrary {
         let ext = sourceAudio.pathExtension.isEmpty ? "m4a" : sourceAudio.pathExtension
         let originalName = "original.\(ext)"
         let pearl = Pearl(id: UUID(), number: 1, created: created, mode: mode, notes: notes,
-                          refinedBy: refinement.model, voiceID: voiceID,
+                          refinedBy: refinement.model, polisher: refinement.provider.rawValue, voiceID: voiceID,
                           textFile: Pearl.baseName(number: 1, mode: mode) + ".txt", audioFile: nil)
         let meta = RecordingMeta(title: RecordingFiles.title(for: refinement.text), created: created,
                                  originalFile: originalName, favorite: false, pearls: [pearl])
@@ -118,7 +118,7 @@ final class RecordingLibrary {
         guard var entry = entry(entryID) else { throw Self.missingRecording }
         let number = (entry.meta.pearls.map(\.number).max() ?? 0) + 1
         let pearl = Pearl(id: UUID(), number: number, created: Date(), mode: mode, notes: notes,
-                          refinedBy: refinement.model, voiceID: voiceID,
+                          refinedBy: refinement.model, polisher: refinement.provider.rawValue, voiceID: voiceID,
                           textFile: Pearl.baseName(number: number, mode: mode) + ".txt", audioFile: nil)
         try await writeText(refinement.text, file: pearl.textFile, in: entryID)
         entry.meta.pearls.append(pearl)
@@ -187,7 +187,7 @@ final class RecordingLibrary {
     /// returns it with its audio. Progress and errors are in `forging` and
     /// `forgeErrors`.
     func forgeNewPearl(for entryID: String, mode: RefinementMode, notes: String?,
-                       voiceID: String) async -> (Pearl, Data)? {
+                       polisher: PolisherChoice, voiceID: String) async -> (Pearl, Data)? {
         guard forging[entryID] == nil, let entry = entry(entryID) else { return nil }
         forgeErrors[entryID] = nil
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Forge a pearl")
@@ -197,7 +197,7 @@ final class RecordingLibrary {
         }
         do {
             forging[entryID] = .refining
-            let refinement = try await Forge.refine(entry.transcript, mode: mode, notes: notes)
+            let refinement = try await Forge.refine(entry.transcript, mode: mode, notes: notes, with: polisher)
             let pearl = try await addPearl(to: entryID, refinement: refinement, mode: mode,
                                            notes: notes, voiceID: voiceID)
             forging[entryID] = .speaking

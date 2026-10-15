@@ -7,6 +7,9 @@ enum Credential: String, CaseIterable {
     case anthropicKey = "anthropic-api-key"
     /// Only needed when the Anthropic key is organization-scoped.
     case anthropicWorkspaceID = "anthropic-workspace-id"
+    case openAIKey = "openai-api-key"
+    case geminiKey = "gemini-api-key"
+    case openRouterKey = "openrouter-api-key"
 }
 
 /// Reads and writes credentials in this iPhone's Keychain. Items stay on this

@@ -4,7 +4,8 @@ import SwiftUI
 struct HistoryView: View {
     let library: RecordingLibrary
     let settings: SettingsModel
-    let openSettings: () -> Void
+    let polishers: PolishersModel
+    let openTab: (AppTab) -> Void
 
     @State private var search = ""
     @State private var favoritesOnly = false
@@ -24,7 +25,7 @@ struct HistoryView: View {
                     Section {
                         Label(problem, systemImage: "exclamationmark.icloud")
                             .foregroundStyle(.orange)
-                        Button("Open Settings", action: openSettings)
+                        Button("Open Settings") { openTab(.settings) }
                     }
                 }
                 ForEach(shown) { entry in
@@ -78,7 +79,7 @@ struct HistoryView: View {
                 }
             }
             .navigationDestination(for: String.self) { id in
-                RecordingDetailView(entryID: id, library: library, settings: settings)
+                RecordingDetailView(entryID: id, library: library, settings: settings, polishers: polishers)
             }
             .confirmationDialog("Delete this recording?",
                                 isPresented: Binding(get: { pendingDelete != nil },
@@ -143,5 +144,5 @@ private struct HistoryRow: View {
 }
 
 #Preview {
-    HistoryView(library: RecordingLibrary(), settings: SettingsModel(), openSettings: {})
+    HistoryView(library: RecordingLibrary(), settings: SettingsModel(), polishers: PolishersModel(), openTab: { _ in })
 }

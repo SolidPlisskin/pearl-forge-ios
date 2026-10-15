@@ -19,11 +19,25 @@ enum Forge {
         try await elevenLabs().transcribe(audioAt: audio)
     }
 
-    static func refine(_ transcript: String, mode: RefinementMode, notes: String?) async throws -> Refinement {
+    /// Polishes the transcript with the chosen AI, using the Pinokio build's
+    /// instructions for the mode plus any notes you gave.
+    static func refine(_ transcript: String, mode: RefinementMode, notes: String?,
+                       with choice: PolisherChoice) async throws -> Refinement {
         guard !transcript.isEmpty else {
             throw PipelineError(message: "The transcript for this recording couldn't be loaded. Pull down on History to refresh, then try again.")
         }
-        return try await anthropic().refine(transcript, mode: mode, notes: notes)
+        let system = RefinementPrompts.system(for: mode, notes: notes)
+        guard let key = KeychainStore.read(choice.provider.credential) else {
+            throw PipelineError(message: "Add your \(choice.provider.name) key in the AI tab first.")
+        }
+        switch choice.provider {
+        case .anthropic:
+            return try await AnthropicClient(apiKey: key, workspaceID: KeychainStore.read(.anthropicWorkspaceID))
+                .refine(transcript, system: system, model: choice.model)
+        case .openai, .gemini, .openrouter:
+            return try await OpenAICompatibleClient(provider: choice.provider, apiKey: key)
+                .refine(transcript, system: system, model: choice.model)
+        }
     }
 
     static func speak(_ text: String, voiceID: String) async throws -> Data {
@@ -35,12 +49,5 @@ enum Forge {
             throw PipelineError(message: "Add your ElevenLabs key in Settings first.")
         }
         return ElevenLabsClient(apiKey: key)
-    }
-
-    private static func anthropic() throws -> AnthropicClient {
-        guard let key = KeychainStore.read(.anthropicKey) else {
-            throw PipelineError(message: "Add your Anthropic key in Settings first.")
-        }
-        return AnthropicClient(apiKey: key, workspaceID: KeychainStore.read(.anthropicWorkspaceID))
     }
 }

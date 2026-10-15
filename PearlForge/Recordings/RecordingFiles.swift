@@ -12,12 +12,14 @@ struct Pearl: Codable, Identifiable, Equatable {
     /// The model that wrote it; differs from the requested model only when
     /// Anthropic's fallback stepped in.
     var refinedBy: String?
+    /// The AI service that wrote it ("anthropic", "openai", …).
+    var polisher: String?
     var voiceID: String?
     var textFile: String
     var audioFile: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, number, created, mode, notes
+        case id, number, created, mode, notes, polisher
         case refinedBy = "refined_by"
         case voiceID = "voice_id"
         case textFile = "text_file"
@@ -75,6 +77,7 @@ struct RecordingMeta: Codable, Equatable {
                             mode: try container.decodeIfPresent(RefinementMode.self, forKey: .mode) ?? .clean,
                             notes: nil,
                             refinedBy: try container.decodeIfPresent(String.self, forKey: .refinedBy),
+                            polisher: PolisherProvider.anthropic.rawValue,
                             voiceID: try container.decodeIfPresent(String.self, forKey: .voiceID),
                             textFile: "refined_transcript.txt",
                             audioFile: try container.decodeIfPresent(String.self, forKey: .outputFile))]

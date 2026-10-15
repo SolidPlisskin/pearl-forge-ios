@@ -3,34 +3,20 @@ import SwiftUI
 /// Paste in, replace, or remove one service's API key. A saved key is never
 /// shown again, only replaced.
 struct KeyEditorView: View {
-    enum Service {
-        case elevenLabs
-        case anthropic
-
-        var title: String {
-            switch self {
-            case .elevenLabs: return "ElevenLabs key"
-            case .anthropic: return "Anthropic key"
-            }
-        }
-
-        var keysPageLabel: String {
-            switch self {
-            case .elevenLabs: return "Get your key at elevenlabs.io"
-            case .anthropic: return "Get your key at console.anthropic.com"
-            }
-        }
-
-        var keysPage: URL {
-            switch self {
-            case .elevenLabs: return URL(string: "https://elevenlabs.io/app/settings/api-keys")!
-            case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")!
-            }
-        }
+    /// What the key is for and how to save it.
+    struct Target {
+        let title: String
+        let keysPageLabel: String
+        let keysPage: URL
+        /// Claude keys can belong to an organization that needs a workspace ID.
+        var usesWorkspace = false
+        let isSaved: Bool
+        /// Saves a newly typed key (nil keeps the current one) and workspace.
+        let save: (_ key: String?, _ workspaceID: String) throws -> Void
+        let remove: () -> Void
     }
 
-    let service: Service
-    let model: SettingsModel
+    let target: Target
 
     @Environment(\.dismiss) private var dismiss
     @State private var key = ""
@@ -38,11 +24,6 @@ struct KeyEditorView: View {
     @State private var savedWorkspaceID = ""
     @State private var saveError: String?
     @State private var confirmingRemove = false
-
-    private var isSaved: Bool {
-        let status = service == .elevenLabs ? model.elevenLabsStatus : model.anthropicStatus
-        return status != .notSet
-    }
 
     private var trimmedKey: String {
         key.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,14 +35,14 @@ struct KeyEditorView: View {
 
     private var canSave: Bool {
         if !trimmedKey.isEmpty { return true }
-        // A saved Anthropic key can have just its workspace changed.
-        return service == .anthropic && isSaved && trimmedWorkspaceID != savedWorkspaceID
+        // A saved Claude key can have just its workspace changed.
+        return target.usesWorkspace && target.isSaved && trimmedWorkspaceID != savedWorkspaceID
     }
 
     var body: some View {
         Form {
             Section {
-                SecureField(isSaved ? "Paste a new key to replace it" : "Paste your key", text: $key)
+                SecureField(target.isSaved ? "Paste a new key to replace it" : "Paste your key", text: $key)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.done)
@@ -69,10 +50,10 @@ struct KeyEditorView: View {
             } header: {
                 Text("API key")
             } footer: {
-                Link(service.keysPageLabel, destination: service.keysPage)
+                Link(target.keysPageLabel, destination: target.keysPage)
             }
 
-            if service == .anthropic {
+            if target.usesWorkspace {
                 Section {
                     TextField("Workspace ID", text: $workspaceID)
                         .textInputAutocapitalization(.never)
@@ -84,7 +65,7 @@ struct KeyEditorView: View {
                 }
             }
 
-            if isSaved {
+            if target.isSaved {
                 Section {
                     Button("Remove key", role: .destructive) {
                         confirmingRemove = true
@@ -92,7 +73,7 @@ struct KeyEditorView: View {
                 }
             }
         }
-        .navigationTitle(service.title)
+        .navigationTitle(target.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -101,14 +82,19 @@ struct KeyEditorView: View {
             }
         }
         .onAppear {
-            savedWorkspaceID = KeychainStore.read(.anthropicWorkspaceID) ?? ""
-            workspaceID = savedWorkspaceID
+            if target.usesWorkspace {
+                savedWorkspaceID = KeychainStore.read(.anthropicWorkspaceID) ?? ""
+                workspaceID = savedWorkspaceID
+            }
         }
         .confirmationDialog("Remove this key from your iPhone?", isPresented: $confirmingRemove,
                             titleVisibility: .visible) {
-            Button("Remove key", role: .destructive, action: remove)
+            Button("Remove key", role: .destructive) {
+                target.remove()
+                dismiss()
+            }
         } message: {
-            Text("Pearl Forge can't work without it. You'll need to paste it in again, and most services only show a key once.")
+            Text("You'll need to paste it in again to use this service, and most services only show a key once.")
         }
         .alert("Couldn't save", isPresented: Binding(
             get: { saveError != nil },
@@ -122,24 +108,52 @@ struct KeyEditorView: View {
 
     private func save() {
         do {
-            switch service {
-            case .elevenLabs:
-                try model.saveElevenLabsKey(trimmedKey)
-            case .anthropic:
-                try model.saveAnthropic(key: trimmedKey.isEmpty ? nil : trimmedKey,
-                                        workspaceID: trimmedWorkspaceID)
-            }
+            try target.save(trimmedKey.isEmpty ? nil : trimmedKey, trimmedWorkspaceID)
             dismiss()
         } catch {
             saveError = error.localizedDescription
         }
     }
+}
 
-    private func remove() {
-        switch service {
-        case .elevenLabs: model.removeElevenLabsKey()
-        case .anthropic: model.removeAnthropicKey()
+/// A key's name and whether it's saved and working.
+struct KeyStatusRow: View {
+    let title: String
+    var subtitle: String?
+    let status: KeyStatus
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            statusView
         }
-        dismiss()
+        // Keep the divider lined up with the row title, not the status label.
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+    }
+
+    @ViewBuilder
+    private var statusView: some View {
+        switch status {
+        case .notSet:
+            Text("Not set").foregroundStyle(.secondary)
+        case .saved:
+            Text("Saved").foregroundStyle(.secondary)
+        case .checking:
+            Text("Checking…").foregroundStyle(.secondary)
+        case .works:
+            Label("Works", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .failed:
+            Label("Not working", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
     }
 }

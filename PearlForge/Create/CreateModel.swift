@@ -115,7 +115,7 @@ final class CreateModel {
 
     /// Runs whichever steps haven't succeeded yet: transcribe, refine (and
     /// save), then speak.
-    func refineAndSpeak(voiceID: String, library: RecordingLibrary) async {
+    func refineAndSpeak(voiceID: String, polisher: PolisherChoice, library: RecordingLibrary) async {
         guard let source, step == nil else { return }
         errorMessage = nil
         // Give the requests time to finish if the phone is locked mid-way.
@@ -129,7 +129,7 @@ final class CreateModel {
             }
             if recordingID == nil, let transcript {
                 step = .refining
-                let refinement = try await Forge.refine(transcript, mode: mode, notes: nil)
+                let refinement = try await Forge.refine(transcript, mode: mode, notes: nil, with: polisher)
                 let (entry, pearl) = try await library.createRecording(sourceAudio: source, transcript: transcript,
                                                                        refinement: refinement, mode: mode,
                                                                        notes: nil, voiceID: voiceID)

@@ -8,6 +8,7 @@ struct PearlView: View {
     let pearlID: UUID
     let library: RecordingLibrary
     let settings: SettingsModel
+    let polishers: PolishersModel
     let player: AudioPlayback
 
     @State private var text = ""
@@ -42,8 +43,8 @@ struct PearlView: View {
                     }
                 }
                 LabeledContent("Forged", value: pearl.created.formatted(date: .abbreviated, time: .shortened))
-                if let model = pearl.refinedBy, model != PipelineConfig.refinementModel {
-                    LabeledContent("Refined by", value: model)
+                if let by = polishedBy(pearl, polishers: polishers) {
+                    LabeledContent("Polished by", value: by)
                 }
             }
 
