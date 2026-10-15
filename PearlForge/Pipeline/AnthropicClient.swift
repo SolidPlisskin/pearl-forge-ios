@@ -25,8 +25,8 @@ struct AnthropicClient {
     }
 
     /// Improves how clearly the transcript is expressed without changing what
-    /// it says, using the system prompt for `mode`.
-    func refine(_ transcript: String, mode: RefinementMode) async throws -> Refinement {
+    /// it says, using the system prompt for `mode` plus any notes you gave.
+    func refine(_ transcript: String, mode: RefinementMode, notes: String? = nil) async throws -> Refinement {
         var request = URLRequest(url: PipelineConfig.anthropicBase.appendingPathComponent("messages"),
                                  timeoutInterval: PipelineConfig.requestTimeout)
         request.httpMethod = "POST"
@@ -52,7 +52,7 @@ struct AnthropicClient {
         // Only the visible text block(s) are read back out.
         let body = Body(model: PipelineConfig.refinementModel,
                         maxTokens: PipelineConfig.refinementMaxTokens,
-                        system: RefinementPrompts.system(for: mode),
+                        system: RefinementPrompts.system(for: mode, notes: notes),
                         messages: [.init(role: "user", content: transcript)],
                         fallbacks: "default")
         let encoder = JSONEncoder()

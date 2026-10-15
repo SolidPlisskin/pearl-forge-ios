@@ -30,6 +30,11 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// The subtitle as a sentence: "Light tidy-up, keeps almost everything."
+    var subtitleSentence: String {
+        subtitle.prefix(1).uppercased() + subtitle.dropFirst() + "."
+    }
+
     var instruction: String {
         switch self {
         case .clean: return RefinementPrompts.clean
@@ -40,9 +45,26 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
 }
 
 enum RefinementPrompts {
-    /// The full system prompt for one refinement request.
-    static func system(for mode: RefinementMode) -> String {
-        systemBase + "\n\n" + mode.instruction
+    /// The full system prompt for one refinement request. Without notes it is
+    /// exactly the Pinokio build's prompt; your notes for a pearl are added
+    /// after it.
+    static func system(for mode: RefinementMode, notes: String? = nil) -> String {
+        let prompt = systemBase + "\n\n" + mode.instruction
+        guard let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty else {
+            return prompt
+        }
+        return prompt + "\n\n" + speakerRequest(notes)
+    }
+
+    /// What you asked to be different for one pearl. Not part of the Pinokio
+    /// prompts; added only when you write a request.
+    static func speakerRequest(_ notes: String) -> String {
+        """
+        SPEAKER'S REQUEST FOR THIS VERSION:
+        \(notes)
+
+        Apply this request on top of the mode above. Everything else in the rules above still holds; depart from a rule only where the request explicitly asks you to.
+        """
     }
 
     static let systemBase = """

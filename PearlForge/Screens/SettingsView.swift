@@ -1,17 +1,73 @@
 import SwiftUI
 
-/// API keys (kept in the Keychain) and the ElevenLabs voice to speak in.
+/// API keys (kept in the Keychain), the ElevenLabs voice to speak in, and
+/// where recordings are saved.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
+    let library: RecordingLibrary
+
+    @State private var choosingFolder = false
+    @State private var storageMessage: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 keysSection
                 voiceSection
+                storageSection
             }
             .navigationTitle("Settings")
             .task { await model.checkSavedKeys() }
+            .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+                guard case .success(let folder) = result else { return }
+                Task {
+                    do {
+                        let unmoved = try await library.useFolder(folder)
+                        if !unmoved.isEmpty {
+                            storageMessage = "\(unmoved.count) recording(s) couldn't be moved and stayed on this iPhone (On My iPhone › Pearl Forge › Recordings in the Files app)."
+                        }
+                    } catch {
+                        storageMessage = error.localizedDescription
+                    }
+                }
+            }
+            .alert("Storage", isPresented: Binding(get: { storageMessage != nil },
+                                                   set: { if !$0 { storageMessage = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(storageMessage ?? "")
+            }
+        }
+    }
+
+    private var storageSection: some View {
+        Section {
+            LabeledContent("Saved in", value: library.locationName)
+            if library.isMoving {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Moving your recordings…")
+                }
+            } else {
+                Button(library.isUsingFolder ? "Choose a different folder…" : "Save to iCloud Drive…") {
+                    choosingFolder = true
+                }
+            }
+        } header: {
+            Text("Storage")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let problem = library.storageProblem {
+                    Text(problem).foregroundStyle(.red)
+                }
+                if !library.isUsingFolder {
+                    Text("Your recordings are on this iPhone. Tap above, choose iCloud Drive, and tap Open: Pearl Forge will keep them in a “Pearl Forge” folder there, moving the ones you already have.")
+                } else if library.isInICloudDrive {
+                    Text("Your recordings are in iCloud Drive, also in the Files app on your iPhone and Mac. Your iPhone keeps only what it has room for and downloads a recording again when you play it.")
+                } else {
+                    Text("Your recordings are in this folder. Recordings move along if you choose a different one.")
+                }
+            }
         }
     }
 
@@ -137,5 +193,5 @@ private struct KeyStatusRow: View {
 }
 
 #Preview {
-    SettingsView(model: SettingsModel())
+    SettingsView(model: SettingsModel(), library: RecordingLibrary())
 }

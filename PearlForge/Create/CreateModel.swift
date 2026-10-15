@@ -3,23 +3,12 @@ import Observation
 import UIKit
 
 /// Drives the Create screen: record (or import) a voice note, then transcribe
-/// it, refine it, save it, and speak it back in your voice. A failed step can
-/// be retried without repeating the steps before it.
+/// it, refine it, save it as a new recording, and speak its first pearl back
+/// in your voice. A failed step can be retried without repeating the steps
+/// before it.
 @MainActor
 @Observable
 final class CreateModel {
-    enum Step: Equatable {
-        case transcribing, refining, speaking
-
-        var progressLabel: String {
-            switch self {
-            case .transcribing: return "Transcribing…"
-            case .refining: return "Refining (keeping your meaning)…"
-            case .speaking: return "Speaking it back in your voice…"
-            }
-        }
-    }
-
     private static let modeKey = "refinementMode"
     private static let pendingRecordingURL = URL.temporaryDirectory.appending(path: "pending-recording.m4a")
 
@@ -33,7 +22,7 @@ final class CreateModel {
     /// The voice note waiting to be processed, recorded or imported.
     private(set) var source: URL?
     private(set) var sourceDuration: TimeInterval?
-    private(set) var step: Step?
+    private(set) var step: ForgeStep?
     private(set) var errorMessage: String?
     private(set) var microphoneDenied = false
 
@@ -41,9 +30,11 @@ final class CreateModel {
     /// The refined text, editable before regenerating the audio.
     var refinedText = ""
     private(set) var refinedMode: RefinementMode?
-    /// Where this recording is saved; set once the refinement is done.
-    private(set) var folder: URL?
-    private(set) var outputURL: URL?
+    /// The saved recording and its first pearl, once refined.
+    private(set) var recordingID: String?
+    private(set) var pearlID: UUID?
+    /// A copy of the audio for the share sheet.
+    private(set) var shareURL: URL?
     /// The text the current audio was made from.
     private var spokenText: String?
 
@@ -52,6 +43,7 @@ final class CreateModel {
     }
 
     var isBusy: Bool { step != nil }
+    var hasResult: Bool { recordingID != nil }
 
     /// True once you've edited the refined text since the audio was made.
     var hasUnspokenEdits: Bool {
@@ -104,7 +96,7 @@ final class CreateModel {
     }
 
     /// Clears the screen for a new voice note. Anything already refined is
-    /// saved in its folder, so nothing is lost.
+    /// saved in History, so nothing is lost.
     func startNew() {
         player.unload()
         source = nil
@@ -113,8 +105,9 @@ final class CreateModel {
         transcript = nil
         refinedText = ""
         refinedMode = nil
-        folder = nil
-        outputURL = nil
+        recordingID = nil
+        pearlID = nil
+        shareURL = nil
         spokenText = nil
     }
 
@@ -122,7 +115,7 @@ final class CreateModel {
 
     /// Runs whichever steps haven't succeeded yet: transcribe, refine (and
     /// save), then speak.
-    func refineAndSpeak(voiceID: String) async {
+    func refineAndSpeak(voiceID: String, library: RecordingLibrary) async {
         guard let source, step == nil else { return }
         errorMessage = nil
         // Give the requests time to finish if the phone is locked mid-way.
@@ -130,18 +123,23 @@ final class CreateModel {
         defer { UIApplication.shared.endBackgroundTask(backgroundTask) }
 
         do {
-            let eleven = try elevenLabs()
             if transcript == nil {
                 step = .transcribing
-                transcript = try await eleven.transcribe(audioAt: source)
+                transcript = try await Forge.transcribe(source)
             }
-            if folder == nil, let transcript {
+            if recordingID == nil, let transcript {
                 step = .refining
-                let refinement = try await anthropic().refine(transcript, mode: mode)
-                try save(transcript: transcript, refinement: refinement, source: source, voiceID: voiceID)
+                let refinement = try await Forge.refine(transcript, mode: mode, notes: nil)
+                let (entry, pearl) = try await library.createRecording(sourceAudio: source, transcript: transcript,
+                                                                       refinement: refinement, mode: mode,
+                                                                       notes: nil, voiceID: voiceID)
+                recordingID = entry.id
+                pearlID = pearl.id
+                refinedText = refinement.text
+                refinedMode = mode
             }
             step = .speaking
-            try await speak(voiceID: voiceID, using: eleven)
+            try await speak(voiceID: voiceID, library: library)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -149,82 +147,34 @@ final class CreateModel {
     }
 
     /// Re-speaks the (edited) refined text and replaces the saved audio.
-    func regenerateAudio(voiceID: String) async {
-        guard folder != nil, step == nil else { return }
+    func regenerateAudio(voiceID: String, library: RecordingLibrary) async {
+        guard recordingID != nil, step == nil else { return }
         errorMessage = nil
         step = .speaking
         do {
-            try await speak(voiceID: voiceID, using: try elevenLabs())
+            try await speak(voiceID: voiceID, library: library)
         } catch {
             errorMessage = error.localizedDescription
         }
         step = nil
     }
 
-    private func save(transcript: String, refinement: Refinement, source: URL, voiceID: String) throws {
-        let created = Date()
-        let folder = try RecordingStore.createFolder(created: created, refined: refinement.text)
-        let originalName = "original.\(source.pathExtension)"
-        var originalFile: String? = originalName
-        do {
-            try FileManager.default.copyItem(at: source, to: folder.appending(path: originalName))
-        } catch {
-            originalFile = nil
-        }
-        try transcript.write(to: folder.appending(path: RecordingStore.originalTranscriptName),
-                             atomically: true, encoding: .utf8)
-        try refinement.text.write(to: folder.appending(path: RecordingStore.refinedTranscriptName),
-                                  atomically: true, encoding: .utf8)
-        try RecordingStore.writeMeta(RecordingMeta(title: RecordingMeta.title(for: refinement.text),
-                                                   created: created,
-                                                   mode: mode,
-                                                   voiceID: voiceID,
-                                                   originalFile: originalFile,
-                                                   outputFile: nil,
-                                                   favorite: false,
-                                                   refinedBy: refinement.model),
-                                     in: folder)
-        self.folder = folder
-        refinedText = refinement.text
-        refinedMode = mode
-    }
-
     /// Saves the current refined text, speaks it, and plays the result.
-    private func speak(voiceID: String, using eleven: ElevenLabsClient) async throws {
-        guard let folder else { return }
+    private func speak(voiceID: String, library: RecordingLibrary) async throws {
+        guard let recordingID, let pearlID else { return }
         let text = refinedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw PipelineError(message: "There's no text to turn into speech.")
         }
-        try text.write(to: folder.appending(path: RecordingStore.refinedTranscriptName),
-                       atomically: true, encoding: .utf8)
-
+        if library.entry(recordingID)?.pearlTexts[pearlID] != text {
+            try await library.updateText(text, of: pearlID, in: recordingID)
+        }
         player.unload()
-        let audio = try await eleven.synthesize(text, voiceID: voiceID)
-        let url = folder.appending(path: RecordingStore.outputName)
-        try audio.write(to: url, options: .atomic)
-        try RecordingStore.updateMeta(in: folder) { meta in
-            meta.title = RecordingMeta.title(for: text)
-            meta.voiceID = voiceID
-            meta.outputFile = RecordingStore.outputName
-        }
+        let audio = try await Forge.speak(text, voiceID: voiceID)
+        try await library.setAudio(audio, of: pearlID, in: recordingID, voiceID: voiceID)
         spokenText = text
-        outputURL = url
-        player.load(url)
+        shareURL = try? RecordingFiles.shareCopy(of: audio, title: RecordingFiles.title(for: text), pearlNumber: 1)
+        player.load(audio, key: pearlID.uuidString)
         player.play()
-    }
-
-    private func elevenLabs() throws -> ElevenLabsClient {
-        guard let key = KeychainStore.read(.elevenLabsKey) else {
-            throw PipelineError(message: "Add your ElevenLabs key in Settings first.")
-        }
-        return ElevenLabsClient(apiKey: key)
-    }
-
-    private func anthropic() throws -> AnthropicClient {
-        guard let key = KeychainStore.read(.anthropicKey) else {
-            throw PipelineError(message: "Add your Anthropic key in Settings first.")
-        }
-        return AnthropicClient(apiKey: key, workspaceID: KeychainStore.read(.anthropicWorkspaceID))
     }
 }

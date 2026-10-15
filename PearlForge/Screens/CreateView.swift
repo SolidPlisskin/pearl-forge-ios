@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 /// Record a thought, pick how much refinement, and hear it back in your voice.
 struct CreateView: View {
     let settings: SettingsModel
+    let library: RecordingLibrary
     let openSettings: () -> Void
 
     @State private var model = CreateModel()
@@ -24,7 +25,7 @@ struct CreateView: View {
                 if !isReady {
                     setupSection
                 }
-                if model.folder == nil {
+                if !model.hasResult {
                     recorderSection
                     if model.source != nil {
                         modeSection
@@ -39,14 +40,14 @@ struct CreateView: View {
                             .textSelection(.enabled)
                     }
                 }
-                if model.folder != nil {
+                if model.hasResult {
                     refinedSection
                     voiceSection
                 }
             }
             .navigationTitle("Pearl Forge")
             .toolbar {
-                if model.folder != nil && !model.isBusy {
+                if model.hasResult && !model.isBusy {
                     ToolbarItem(placement: .primaryAction) {
                         Button("New recording", systemImage: "plus") {
                             model.startNew()
@@ -168,7 +169,7 @@ struct CreateView: View {
         } header: {
             Text("How much refinement?")
         } footer: {
-            Text(sentence(model.mode.subtitle))
+            Text(model.mode.subtitleSentence)
         }
     }
 
@@ -181,7 +182,7 @@ struct CreateView: View {
                 }
             } else {
                 Button {
-                    Task { await model.refineAndSpeak(voiceID: settings.selectedVoiceID) }
+                    Task { await model.refineAndSpeak(voiceID: settings.selectedVoiceID, library: library) }
                 } label: {
                     Text(model.errorMessage == nil ? "Refine & speak" : "Try again")
                         .font(.headline)
@@ -226,20 +227,22 @@ struct CreateView: View {
                     ProgressView()
                     Text(step.progressLabel)
                 }
-            } else if let outputURL = model.outputURL {
+            } else if model.player.loadedKey != nil {
                 PlayerRow(player: model.player)
                 if model.hasUnspokenEdits {
                     Button("Regenerate audio from your edits") {
                         editingRefined = false
-                        Task { await model.regenerateAudio(voiceID: settings.selectedVoiceID) }
+                        Task { await model.regenerateAudio(voiceID: settings.selectedVoiceID, library: library) }
                     }
                 }
-                ShareLink(item: outputURL) {
-                    Label("Share audio", systemImage: "square.and.arrow.up")
+                if let shareURL = model.shareURL {
+                    ShareLink(item: shareURL) {
+                        Label("Share audio", systemImage: "square.and.arrow.up")
+                    }
                 }
             } else if model.errorMessage != nil {
                 Button("Try again") {
-                    Task { await model.refineAndSpeak(voiceID: settings.selectedVoiceID) }
+                    Task { await model.refineAndSpeak(voiceID: settings.selectedVoiceID, library: library) }
                 }
             }
         } header: {
@@ -247,16 +250,10 @@ struct CreateView: View {
         } footer: {
             if let error = model.errorMessage {
                 Text(error).foregroundStyle(.red)
-            } else if let folder = model.folder {
-                Text("Saved in Files › On My iPhone › Pearl Forge › Recordings › \(folder.lastPathComponent)")
+            } else {
+                Text("Saved as pearl 1 in History (\(library.locationName)). Open it there to forge more versions.")
             }
         }
-    }
-
-    // MARK: Helpers
-
-    private func sentence(_ phrase: String) -> String {
-        phrase.prefix(1).uppercased() + phrase.dropFirst() + "."
     }
 }
 
@@ -344,5 +341,5 @@ struct PlayerRow: View {
 }
 
 #Preview {
-    CreateView(settings: SettingsModel(), openSettings: {})
+    CreateView(settings: SettingsModel(), library: RecordingLibrary(), openSettings: {})
 }
