@@ -7,8 +7,8 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-// Pearl Forge app icon: a luminous pearl lit from below by a forge's glow,
-// on deep teal, with faint rings for the voice. 1024×1024, fully opaque.
+// Pearl Forge app icon: a luminous pearl above a red record button, on deep
+// teal, with faint rings for the voice. 1024×1024, fully opaque.
 let size = 1024
 let s = CGFloat(size)
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -31,23 +31,14 @@ func radial(_ g: CGGradient, at c: CGPoint, radius: CGFloat, from start: CGPoint
 ctx.drawLinearGradient(gradient([(0, color(0x02070B)), (0.42, color(0x082A36)), (1, color(0x135A6E))]),
                        start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: s), options: [])
 
-// 2. The forge: warm glow rising from below.
-radial(gradient([(0, color(0xFF7A1E, 0.85)), (0.40, color(0xE04A14, 0.38)), (1, color(0x9A2A08, 0))]),
-       at: CGPoint(x: s / 2, y: -s * 0.04), radius: s * 0.66)
-radial(gradient([(0, color(0xFFD27A, 0.90)), (0.5, color(0xFFA040, 0.35)), (1, color(0xFF8A2A, 0))]),
-       at: CGPoint(x: s / 2, y: -s * 0.06), radius: s * 0.30)
-
-// Sparks rising from the forge.
-for (x, y, radius, alpha) in [(0.40, 0.17, 0.012, 0.95), (0.58, 0.13, 0.009, 0.85), (0.47, 0.25, 0.007, 0.70),
-                              (0.63, 0.22, 0.006, 0.55), (0.35, 0.28, 0.005, 0.45), (0.54, 0.31, 0.0045, 0.40)] {
-    let c = CGPoint(x: s * x, y: s * y)
-    radial(gradient([(0, color(0xFFF1C2, alpha)), (0.35, color(0xFFB050, alpha * 0.6)), (1, color(0xFF7A1E, 0))]),
-           at: c, radius: s * radius * 3.2)
-}
+// 2. A soft red light around where the record button sits.
+let button = CGPoint(x: s / 2, y: s * 0.155)
+radial(gradient([(0, color(0xFF3B30, 0.42)), (0.45, color(0xD0201A, 0.14)), (1, color(0x9A1410, 0))]),
+       at: button, radius: s * 0.26)
 
 // 3. Voice rings around the pearl.
-let center = CGPoint(x: s / 2, y: s * 0.55)
-let r = s * 0.255
+let center = CGPoint(x: s / 2, y: s * 0.585)
+let r = s * 0.24
 for (radius, alpha, width) in [(r * 1.36, 0.13, s * 0.010), (r * 1.66, 0.075, s * 0.008), (r * 1.96, 0.04, s * 0.006)] {
     ctx.setStrokeColor(color(0xE8F4F7, alpha))
     ctx.setLineWidth(width)
@@ -75,9 +66,9 @@ radial(gradient([(0, color(0xFF8FB8, 0.0)), (0.62, color(0xFF8FB8, 0.0)), (0.92,
 radial(gradient([(0, color(0x6FE0D8, 0.0)), (0.66, color(0x6FE0D8, 0.0)), (0.93, color(0x6FE0D8, 0.5)), (1, color(0x6FE0D8, 0.2))]),
        at: CGPoint(x: center.x - r * 0.20, y: center.y + r * 0.05), radius: r * 1.02)
 ctx.setBlendMode(.normal)
-// The forge's warm light catching the underside.
-radial(gradient([(0, color(0xFF9A40, 0.85)), (0.55, color(0xFF7A2A, 0.30)), (1, color(0xFF7A2A, 0))]),
-       at: CGPoint(x: center.x + r * 0.05, y: center.y - r * 1.15), radius: r * 1.05)
+// The record button's red light faintly catching the underside.
+radial(gradient([(0, color(0xFF5A50, 0.45)), (0.55, color(0xFF4A40, 0.14)), (1, color(0xFF4A40, 0))]),
+       at: CGPoint(x: center.x, y: center.y - r * 1.2), radius: r * 1.0)
 // Edge shading for roundness.
 radial(gradient([(0, color(0x1A2433, 0)), (0.82, color(0x1A2433, 0)), (1, color(0x1A2433, 0.30))]), at: center, radius: r)
 ctx.restoreGState()
@@ -93,6 +84,21 @@ ctx.restoreGState()
 // A small second glint.
 radial(gradient([(0, color(0xFFFFFF, 0.55)), (1, color(0xFFFFFF, 0))]),
        at: CGPoint(x: center.x + r * 0.42, y: center.y - r * 0.38), radius: r * 0.12)
+
+// 6. The record button: a white ring around a glossy red circle.
+let ringRadius = s * 0.085
+ctx.setStrokeColor(color(0xFFFFFF, 0.94))
+ctx.setLineWidth(s * 0.013)
+ctx.strokeEllipse(in: CGRect(x: button.x - ringRadius, y: button.y - ringRadius, width: ringRadius * 2, height: ringRadius * 2))
+let dot = s * 0.064
+ctx.saveGState()
+ctx.addEllipse(in: CGRect(x: button.x - dot, y: button.y - dot, width: dot * 2, height: dot * 2))
+ctx.clip()
+ctx.drawLinearGradient(gradient([(0, color(0xC81E17)), (1, color(0xFF4D42))]),
+                       start: CGPoint(x: button.x, y: button.y - dot), end: CGPoint(x: button.x, y: button.y + dot), options: [])
+radial(gradient([(0, color(0xFFFFFF, 0.38)), (1, color(0xFFFFFF, 0))]),
+       at: CGPoint(x: button.x - dot * 0.3, y: button.y + dot * 0.45), radius: dot * 0.65)
+ctx.restoreGState()
 
 // Save.
 let image = ctx.makeImage()!
