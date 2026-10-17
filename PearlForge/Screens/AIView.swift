@@ -8,6 +8,7 @@ struct AIView: View {
         NavigationStack {
             Form {
                 activeSection
+                readingSection
                 Section {
                     ForEach(PolisherProvider.allCases) { provider in
                         NavigationLink {
@@ -25,6 +26,32 @@ struct AIView: View {
             }
             .navigationTitle("AI")
             .task { await polishers.checkSavedKeys() }
+        }
+    }
+
+    @ViewBuilder
+    private var readingSection: some View {
+        Section {
+            if polishers.status[.anthropic] == .works {
+                NavigationLink {
+                    ModelPickerView(provider: .anthropic, polishers: polishers, selected: polishers.readingModel,
+                                    note: "Sonnet 5.5 costs about half as much per search as Opus 5.5.") { id, name in
+                        polishers.selectReadingModel(id, name: name)
+                    }
+                } label: {
+                    LabeledContent("Model", value: polishers.readingModelLabel)
+                }
+            } else {
+                LabeledContent("Model", value: polishers.readingModelLabel)
+            }
+        } header: {
+            Text("Finding reading")
+        } footer: {
+            if polishers.status[.anthropic] == .notSet {
+                Text("Find reading searches the web with Claude, so it needs your Claude key, whichever AI polishes.")
+            } else {
+                Text("Find reading always uses Claude, because it searches the web with Claude's search tool. Each search costs roughly 5–15¢ with Sonnet 5.5, or about 25¢ with Opus 5.5, which digs a little deeper.")
+            }
         }
     }
 
@@ -154,7 +181,10 @@ struct ProviderView: View {
                 .foregroundStyle(.secondary)
         case .works:
             NavigationLink {
-                ModelPickerView(provider: provider, polishers: polishers)
+                ModelPickerView(provider: provider, polishers: polishers, selected: polishers.selectedModels[provider],
+                                note: provider == .anthropic ? "Pearl Forge was built and tested with Claude Opus 5.5." : nil) { id, name in
+                    polishers.selectModel(id, name: name, for: provider)
+                }
             } label: {
                 LabeledContent("Model") {
                     if let model = polishers.selectedModels[provider] {
@@ -175,6 +205,11 @@ struct ProviderView: View {
 struct ModelPickerView: View {
     let provider: PolisherProvider
     let polishers: PolishersModel
+    /// The model currently chosen.
+    let selected: String?
+    /// A line shown under the list.
+    let note: String?
+    let onSelect: (_ id: String, _ name: String?) -> Void
 
     @State private var search = ""
     @State private var customID = ""
@@ -191,7 +226,7 @@ struct ModelPickerView: View {
             Section {
                 ForEach(shown) { model in
                     Button {
-                        polishers.selectModel(model.id, name: model.name, for: provider)
+                        onSelect(model.id, model.name)
                         dismiss()
                     } label: {
                         HStack {
@@ -205,7 +240,7 @@ struct ModelPickerView: View {
                                 }
                             }
                             Spacer()
-                            if polishers.selectedModels[provider] == model.id {
+                            if selected == model.id {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.tint)
                                     .accessibilityLabel("Selected")
@@ -214,8 +249,8 @@ struct ModelPickerView: View {
                     }
                 }
             } footer: {
-                if provider == .anthropic {
-                    Text("Pearl Forge was built and tested with Claude Opus 5.5.")
+                if let note {
+                    Text(note)
                 }
             }
 
@@ -224,7 +259,7 @@ struct ModelPickerView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button("Use this model") {
-                    polishers.selectModel(customID.trimmingCharacters(in: .whitespacesAndNewlines), for: provider)
+                    onSelect(customID.trimmingCharacters(in: .whitespacesAndNewlines), nil)
                     dismiss()
                 }
                 .disabled(customID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

@@ -10,12 +10,23 @@ final class PolishersModel {
     private static let activeKey = "polisher"
     private static func modelKey(_ provider: PolisherProvider) -> String { "polisher.model.\(provider.rawValue)" }
     private static func modelNameKey(_ provider: PolisherProvider) -> String { "polisher.modelName.\(provider.rawValue)" }
+    private static let readingModelKey = "reading.model"
+    private static let readingModelNameKey = "reading.modelName"
+
+    /// Find reading uses Claude Sonnet 5.5 unless you choose otherwise: it costs
+    /// about half as much per search as Opus 5.5.
+    static let defaultReadingModel = "claude-sonnet-5-5"
 
     private(set) var status: [PolisherProvider: KeyStatus] = [:]
     private(set) var models: [PolisherProvider: [AIModel]] = [:]
     private(set) var selectedModels: [PolisherProvider: String] = [:]
     /// Remembered so the chosen model can be named before the list loads.
     private var selectedModelNames: [PolisherProvider: String] = [:]
+
+    /// The Claude model that finds reading for your recordings. Separate from
+    /// the polishing model, so each can be chosen on its own.
+    private(set) var readingModel: String
+    private var readingModelName: String?
 
     /// The service that polishes new recordings and new pearls by default.
     var active: PolisherProvider {
@@ -24,6 +35,9 @@ final class PolishersModel {
 
     init() {
         active = UserDefaults.standard.string(forKey: Self.activeKey).flatMap(PolisherProvider.init) ?? .anthropic
+        readingModel = UserDefaults.standard.string(forKey: Self.readingModelKey) ?? Self.defaultReadingModel
+        readingModelName = UserDefaults.standard.string(forKey: Self.readingModelNameKey)
+            ?? (readingModel == Self.defaultReadingModel ? "Claude Sonnet 5.5" : nil)
         for provider in PolisherProvider.allCases {
             status[provider] = KeychainStore.read(provider.credential) == nil ? .notSet : .saved
             selectedModels[provider] = UserDefaults.standard.string(forKey: Self.modelKey(provider))
@@ -57,6 +71,18 @@ final class PolishersModel {
         selectedModelNames[provider] = name
         UserDefaults.standard.set(id, forKey: Self.modelKey(provider))
         UserDefaults.standard.set(name, forKey: Self.modelNameKey(provider))
+    }
+
+    func selectReadingModel(_ id: String, name: String?) {
+        readingModel = id
+        readingModelName = name
+        UserDefaults.standard.set(id, forKey: Self.readingModelKey)
+        UserDefaults.standard.set(name, forKey: Self.readingModelNameKey)
+    }
+
+    /// "Claude Sonnet 5.5": the Find reading model's name.
+    var readingModelLabel: String {
+        models[.anthropic]?.first { $0.id == readingModel }?.name ?? readingModelName ?? readingModel
     }
 
     /// "Claude Opus 5.5" for a known model, else the model id itself.
@@ -135,6 +161,9 @@ final class PolishersModel {
             }
             models[provider] = list
             status[provider] = .works
+            if provider == .anthropic, let listed = list.first(where: { $0.id == readingModel }) {
+                selectReadingModel(listed.id, name: listed.name)
+            }
             if let selected = selectedModels[provider], let listed = list.first(where: { $0.id == selected }) {
                 selectModel(listed.id, name: listed.name, for: provider)
             } else if selectedModels[provider] == nil, let suggested = suggestedModel(for: provider, in: list) {

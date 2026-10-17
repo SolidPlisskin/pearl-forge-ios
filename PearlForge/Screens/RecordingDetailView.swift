@@ -204,9 +204,9 @@ struct RecordingDetailView: View {
         }
     }
 
-    /// The Claude model chosen in the AI tab, used for finding reading.
+    /// The Claude model chosen for finding reading in the AI tab.
     private var claudeModel: String {
-        polishers.selectedModels[.anthropic] ?? PipelineConfig.refinementModel
+        polishers.readingModel
     }
 
     /// The pearl loaded in the player, if any (not the original recording).
