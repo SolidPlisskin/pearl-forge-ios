@@ -9,14 +9,6 @@ struct ReferenceFinder {
     let workspaceID: String?
     let model: String
 
-    /// Models that support web search with dynamic filtering; others use the
-    /// basic version.
-    private static let dynamicSearchModels: Set<String> = [
-        "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5",
-        "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
-        "claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6",
-    ]
-
     private static let maxSteps = 12
     private static let maxReferences = 10
 
@@ -88,6 +80,9 @@ struct ReferenceFinder {
             "system": Self.system,
             "messages": messages,
             "tools": [Self.webSearchTool(for: model), Self.pubMedTool, Self.saveTool],
+            // Each step resends the earlier search results; caching them makes
+            // those repeats much cheaper.
+            "cache_control": ["type": "ephemeral"],
         ]
         if AnthropicClient.fallbackModels.contains(model) {
             request.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
@@ -227,10 +222,12 @@ struct ReferenceFinder {
         return message
     }
 
+    /// The basic web search tool. The filtered version (web_search_20260209)
+    /// runs searches inside code, and in live tests some of the results Claude
+    /// read never came back as checkable search results, so every reference
+    /// failed verification. The basic version always returns them.
     static func webSearchTool(for model: String) -> [String: Any] {
-        ["type": dynamicSearchModels.contains(model) ? "web_search_20260209" : "web_search_20250305",
-         "name": "web_search",
-         "max_uses": 6]
+        ["type": "web_search_20250305", "name": "web_search", "max_uses": 6]
     }
 
     static let pubMedTool: [String: Any] = [

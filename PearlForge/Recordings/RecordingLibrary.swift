@@ -333,6 +333,8 @@ final class RecordingLibrary {
             current.meta.references.append(contentsOf: new)
             try await save(current)
             referenceNotices[entryID] = switch (new.count, result.references.count) {
+            case (0, 0) where result.unverified > 0:
+                "Some possible sources came up, but their links couldn't be confirmed, so nothing was saved. Try again."
             case (0, 0): "No good matches came up this time."
             case (0, _): "Nothing new: everything found was already saved."
             case (1, _): "Found 1 new reference."
