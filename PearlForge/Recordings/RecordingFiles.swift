@@ -32,6 +32,50 @@ struct Pearl: Codable, Identifiable, Equatable {
     }
 }
 
+/// A piece of reading found for a recording: a research paper, essay,
+/// article or blog post that relates to the thought.
+struct Reference: Codable, Identifiable, Equatable, Hashable {
+    enum Kind: String, Codable, CaseIterable {
+        case research, article, essay, blog, book, other
+
+        var title: String {
+            switch self {
+            case .research: return "Research"
+            case .article: return "Article"
+            case .essay: return "Essay"
+            case .blog: return "Blog post"
+            case .book: return "Book"
+            case .other: return "Other"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .research: return "graduationcap"
+            case .article: return "newspaper"
+            case .essay: return "text.book.closed"
+            case .blog: return "text.bubble"
+            case .book: return "book"
+            case .other: return "link"
+            }
+        }
+    }
+
+    var id: UUID
+    var title: String
+    var url: String
+    /// The site or journal: "The Atlantic", "JAMA Pediatrics".
+    var source: String
+    var kind: Kind
+    var year: String?
+    var authors: String?
+    /// How it relates to the thought, in a sentence or two.
+    var note: String
+    /// The PubMed id, for papers found through PubMed.
+    var pmid: String?
+    var found: Date
+}
+
 /// The details saved alongside each recording as meta.json.
 struct RecordingMeta: Codable, Equatable {
     var title: String
@@ -39,17 +83,27 @@ struct RecordingMeta: Codable, Equatable {
     var originalFile: String?
     var favorite: Bool
     var pearls: [Pearl]
+    /// Broad topics such as "Relationships" or "Work & Career". Nil until the
+    /// recording has been sorted.
+    var categories: [String]?
+    /// One first-person sentence summing up the thought.
+    var gist: String?
+    var references: [Reference]
 
-    init(title: String, created: Date, originalFile: String?, favorite: Bool, pearls: [Pearl]) {
+    init(title: String, created: Date, originalFile: String?, favorite: Bool, pearls: [Pearl],
+         categories: [String]? = nil, gist: String? = nil, references: [Reference] = []) {
         self.title = title
         self.created = created
         self.originalFile = originalFile
         self.favorite = favorite
         self.pearls = pearls
+        self.categories = categories
+        self.gist = gist
+        self.references = references
     }
 
     enum CodingKeys: String, CodingKey {
-        case title, created, favorite, pearls
+        case title, created, favorite, pearls, categories, gist, references
         case originalFile = "original_file"
         // The first version saved one refinement per recording at the top level.
         case mode
@@ -67,6 +121,9 @@ struct RecordingMeta: Codable, Equatable {
         created = try container.decode(Date.self, forKey: .created)
         originalFile = try container.decodeIfPresent(String.self, forKey: .originalFile)
         favorite = try container.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+        categories = try container.decodeIfPresent([String].self, forKey: .categories)
+        gist = try container.decodeIfPresent(String.self, forKey: .gist)
+        references = try container.decodeIfPresent([Reference].self, forKey: .references) ?? []
         if let pearls = try container.decodeIfPresent([Pearl].self, forKey: .pearls) {
             self.pearls = pearls
         } else {
@@ -91,6 +148,9 @@ struct RecordingMeta: Codable, Equatable {
         try container.encodeIfPresent(originalFile, forKey: .originalFile)
         try container.encode(favorite, forKey: .favorite)
         try container.encode(pearls, forKey: .pearls)
+        try container.encodeIfPresent(categories, forKey: .categories)
+        try container.encodeIfPresent(gist, forKey: .gist)
+        try container.encode(references, forKey: .references)
     }
 }
 
@@ -111,6 +171,16 @@ struct RecordingEntry: Codable, Identifiable, Equatable {
 
     func pearl(_ id: UUID) -> Pearl? {
         meta.pearls.first { $0.id == id }
+    }
+
+    /// The newest pearl that has audio, for playing a recording in a list.
+    var latestSpokenPearl: Pearl? {
+        pearlsNewestFirst.first { $0.audioFile != nil }
+    }
+
+    /// The newest pearl's text, or what you said if there's no pearl yet.
+    var latestText: String {
+        pearlsNewestFirst.first.flatMap { pearlTexts[$0.id] } ?? transcript
     }
 }
 

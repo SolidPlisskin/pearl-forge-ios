@@ -135,6 +135,8 @@ final class CreateModel {
                                                                        notes: nil, voiceID: voiceID)
                 recordingID = entry.id
                 pearlID = pearl.id
+                // Sort it into topics in the background; it doesn't hold anything up.
+                Task { await library.sortIntoTopics(entry.id, with: polisher) }
                 refinedText = refinement.text
                 refinedMode = mode
             }

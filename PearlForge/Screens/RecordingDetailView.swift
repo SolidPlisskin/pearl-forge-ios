@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One recording: your original voice note and transcript, and every pearl
-/// forged from it, with a button to forge another.
+/// One recording: your original voice note and transcript, its topics, every
+/// pearl forged from it, and reading found for it.
 struct RecordingDetailView: View {
     let entryID: String
     let library: RecordingLibrary
@@ -11,6 +11,8 @@ struct RecordingDetailView: View {
     @State private var player = AudioPlayback()
     @State private var showingForgeSheet = false
     @State private var showingTranscript = false
+    @State private var editingTopics = false
+    @State private var opened: WebPage?
 
     var body: some View {
         if let entry = library.entry(entryID) {
@@ -27,7 +29,15 @@ struct RecordingDetailView: View {
                     .font(.headline)
                 Text(entry.meta.created.formatted(date: .complete, time: .shortened))
                     .foregroundStyle(.secondary)
+                if let gist = entry.meta.gist, !gist.isEmpty {
+                    Text(gist)
+                        .font(.subheadline)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                }
             }
+
+            topicsSection(entry)
 
             if let playing = nowPlayingPearl(in: entry) {
                 Section("Now playing · Pearl \(playing.number)") {
@@ -79,6 +89,8 @@ struct RecordingDetailView: View {
                     Text("Each pearl is a fresh run of your original words through the forge. Your recording itself is never changed.")
                 }
             }
+
+            readingSection(entry)
         }
         .navigationTitle("Recording")
         .navigationBarTitleDisplayMode(.inline)
@@ -92,6 +104,12 @@ struct RecordingDetailView: View {
                 .accessibilityLabel(entry.meta.favorite ? "Remove from favorites" : "Add to favorites")
             }
         }
+        .sheet(isPresented: $editingTopics) {
+            TopicEditor(entryID: entry.id, current: entry.meta.categories ?? [], library: library)
+        }
+        .sheet(item: $opened) { page in
+            SafariView(url: page.url).ignoresSafeArea()
+        }
         .sheet(isPresented: $showingForgeSheet) {
             ForgeSheet(initialMode: entry.pearlsNewestFirst.first?.mode ?? .clean, polishers: polishers) { mode, notes, polisher in
                 Task {
@@ -103,6 +121,92 @@ struct RecordingDetailView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func topicsSection(_ entry: RecordingEntry) -> some View {
+        Section {
+            if library.sorting.contains(entry.id) {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Sorting into topics…")
+                }
+            } else if let topics = entry.meta.categories, !topics.isEmpty {
+                TopicChips(topics: topics)
+                    .padding(.vertical, 4)
+            } else {
+                Text(entry.meta.categories == nil ? "Not sorted into topics yet." : "No topics.")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("Edit topics") { editingTopics = true }
+                if let choice = polishers.activeChoice {
+                    Spacer()
+                    Button(entry.meta.categories == nil ? "Sort automatically" : "Sort again") {
+                        Task { await library.sortIntoTopics(entry.id, with: choice) }
+                    }
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(library.sorting.contains(entry.id))
+        } header: {
+            Text("Topics")
+        } footer: {
+            if let error = library.sortErrors[entry.id] {
+                Text(error).foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func readingSection(_ entry: RecordingEntry) -> some View {
+        let isSearching = library.findingReferences.contains(entry.id)
+        Section {
+            ForEach(entry.meta.references) { reference in
+                Button {
+                    if let url = URL(string: reference.url) { opened = WebPage(url: url) }
+                } label: {
+                    ReferenceRow(reference: reference)
+                }
+                .swipeActions {
+                    Button(role: .destructive) {
+                        Task { await library.deleteReference(reference.id, from: entry.id) }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+            if isSearching {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Searching PubMed and the web… this can take a minute or two.")
+                }
+            } else {
+                Button {
+                    Task { await library.findReferences(for: entry.id, claudeModel: claudeModel) }
+                } label: {
+                    Label(entry.meta.references.isEmpty ? "Find reading" : "Find more reading", systemImage: "books.vertical")
+                }
+                .disabled(polishers.status[.anthropic] == .notSet)
+            }
+        } header: {
+            Text("Reading")
+        } footer: {
+            if let error = library.referenceErrors[entry.id] {
+                Text(error).foregroundStyle(.red)
+            } else if polishers.status[.anthropic] == .notSet {
+                Text("Finding reading uses Claude's web search. Add your Claude key in the AI tab.")
+            } else if let notice = library.referenceNotices[entry.id] {
+                Text(notice)
+            } else if entry.meta.references.isEmpty {
+                Text("Searches PubMed for peer-reviewed research and the web for essays, articles and blog posts related to this thought. Everything found is also kept in the Reading tab.")
+            }
+        }
+    }
+
+    /// The Claude model chosen in the AI tab, used for finding reading.
+    private var claudeModel: String {
+        polishers.selectedModels[.anthropic] ?? PipelineConfig.refinementModel
     }
 
     /// The pearl loaded in the player, if any (not the original recording).

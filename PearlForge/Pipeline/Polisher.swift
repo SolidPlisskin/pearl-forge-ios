@@ -106,6 +106,17 @@ struct Refinement {
     let model: String
 }
 
+/// A plain reply from any AI service.
+struct Completion {
+    let text: String
+    let model: String
+    /// Why the reply ended: "end_turn"/"stop" normally, "refusal", or
+    /// "max_tokens"/"length" when cut off.
+    let stopReason: String?
+
+    var wasCutOff: Bool { stopReason == "max_tokens" || stopReason == "length" }
+}
+
 extension Refinement {
     /// Removes a leading <think>…</think> block some open models put before
     /// their answer.

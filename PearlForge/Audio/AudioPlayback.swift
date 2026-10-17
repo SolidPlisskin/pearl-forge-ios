@@ -12,6 +12,9 @@ final class AudioPlayback {
     /// several recordings knows which one the controls belong to.
     private(set) var loadedKey: String?
 
+    /// Called when the audio plays through to the end (not when paused).
+    @ObservationIgnored var onFinish: (() -> Void)?
+
     @ObservationIgnored private var player: AVAudioPlayer?
     @ObservationIgnored private var progressTask: Task<Void, Never>?
 
@@ -49,6 +52,7 @@ final class AudioPlayback {
                 // The player stops by itself at the end of the file.
                 if !player.isPlaying {
                     self.isPlaying = false
+                    self.onFinish?()
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(200))

@@ -8,13 +8,13 @@ struct AnthropicClient {
 
     /// Models whose safety checks can hand a declined request to Anthropic's
     /// recommended fallback model.
-    private static let fallbackModels: Set<String> = [
+    static let fallbackModels: Set<String> = [
         "claude-fable-5-1", "claude-fable-5", "claude-mythos-5-1",
         "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5",
     ]
 
     /// Models that think only when asked; newer ones think by default.
-    private static let adaptiveThinkingModels = ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
+    static let adaptiveThinkingModels = ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
 
     /// Your account's Claude models, newest first. Listing models is free; no
     /// tokens are spent, so this doubles as the key check.
@@ -45,6 +45,24 @@ struct AnthropicClient {
     /// Improves how clearly the transcript is expressed without changing what
     /// it says, following the given polishing instructions.
     func refine(_ transcript: String, system: String, model: String) async throws -> Refinement {
+        let reply = try await complete(system: system, user: transcript, model: model,
+                                       failure: "Refinement failed")
+        if reply.stopReason == "refusal" {
+            throw PipelineError(message: "Claude declined to refine this recording. Try again, or try a different mode.")
+        }
+        // A cut-off refinement would silently drop the end of your thought.
+        if reply.stopReason == "max_tokens" {
+            throw PipelineError(message: "The refined version was cut off before the end. The recording may be too long for one pass; try Summarize or a shorter recording.")
+        }
+        guard !reply.text.isEmpty else {
+            throw PipelineError(message: "The refinement came back empty. Please try again.")
+        }
+        return Refinement(text: reply.text, provider: .anthropic, model: reply.model)
+    }
+
+    /// One system prompt and one user message; returns the visible reply.
+    func complete(system: String, user: String, model: String,
+                  failure: String = "Claude request failed") async throws -> Completion {
         var request = URLRequest(url: PipelineConfig.anthropicBase.appendingPathComponent("messages"),
                                  timeoutInterval: PipelineConfig.requestTimeout)
         request.httpMethod = "POST"
@@ -77,14 +95,14 @@ struct AnthropicClient {
         let body = Body(model: model,
                         maxTokens: PipelineConfig.refinementMaxTokens,
                         system: system,
-                        messages: [.init(role: "user", content: transcript)],
+                        messages: [.init(role: "user", content: user)],
                         fallbacks: usesFallback ? "default" : nil,
                         thinking: Self.adaptiveThinkingModels.contains(model) ? .init(type: "adaptive") : nil)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         request.httpBody = try encoder.encode(body)
 
-        let data = try await PipelineHTTP.send(request, failure: "Refinement failed")
+        let data = try await PipelineHTTP.send(request, failure: failure)
 
         struct Response: Decodable {
             struct Block: Decodable {
@@ -98,26 +116,15 @@ struct AnthropicClient {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let response = try decoder.decode(Response.self, from: data)
-
-        if response.stopReason == "refusal" {
-            throw PipelineError(message: "Claude declined to refine this recording. Try again, or try a different mode.")
-        }
-        // A cut-off refinement would silently drop the end of your thought.
-        if response.stopReason == "max_tokens" {
-            throw PipelineError(message: "The refined version was cut off before the end. The recording may be too long for one pass; try Summarize or a shorter recording.")
-        }
         let text = (response.content ?? [])
             .filter { $0.type == "text" }
             .compactMap(\.text)
             .joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            throw PipelineError(message: "The refinement came back empty. Please try again.")
-        }
-        return Refinement(text: text, provider: .anthropic, model: response.model ?? model)
+        return Completion(text: text, model: response.model ?? model, stopReason: response.stopReason)
     }
 
-    private func applyHeaders(to request: inout URLRequest) {
+    func applyHeaders(to request: inout URLRequest) {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue(PipelineConfig.anthropicVersion, forHTTPHeaderField: "anthropic-version")
         if let workspaceID, !workspaceID.isEmpty {

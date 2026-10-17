@@ -18,6 +18,14 @@ final class RecordingLibrary {
     /// The step of a pearl being forged (or re-spoken) right now, per recording.
     private(set) var forging: [String: ForgeStep] = [:]
     private(set) var forgeErrors: [String: String] = [:]
+    /// Recordings being sorted into topics right now.
+    private(set) var sorting: Set<String> = []
+    private(set) var sortErrors: [String: String] = [:]
+    /// Recordings whose references are being searched for right now.
+    private(set) var findingReferences: Set<String> = []
+    private(set) var referenceErrors: [String: String] = [:]
+    /// What the last reference search for a recording found.
+    private(set) var referenceNotices: [String: String] = [:]
     /// The "Pearl Forge" folder recordings are saved in, when you chose one.
     private(set) var folderRoot: URL?
 
@@ -236,6 +244,109 @@ final class RecordingLibrary {
             forgeErrors[entryID] = error.localizedDescription
             return nil
         }
+    }
+
+    // MARK: Topics
+
+    /// Every topic with how many recordings are in it, biggest first.
+    var topics: [(name: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for entry in entries {
+            for name in entry.meta.categories ?? [] { counts[name, default: 0] += 1 }
+        }
+        return counts.map { (name: $0.key, count: $0.value) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name.localizedCompare($1.name) == .orderedAscending }
+    }
+
+    var topicNames: [String] { topics.map(\.name) }
+
+    /// Recordings in a topic, oldest first, so they read as a thread.
+    func entries(inTopic topic: String) -> [RecordingEntry] {
+        entries.filter { $0.meta.categories?.contains(topic) == true }
+            .sorted { $0.meta.created < $1.meta.created }
+    }
+
+    /// Recordings that haven't been sorted into topics yet.
+    var unsorted: [RecordingEntry] {
+        entries.filter { $0.meta.categories == nil }
+    }
+
+    /// Asks the AI which topics a recording belongs to. Failures are kept in
+    /// `sortErrors`; the recording simply stays unsorted.
+    func sortIntoTopics(_ entryID: String, with choice: PolisherChoice) async {
+        guard !sorting.contains(entryID), let entry = entry(entryID) else { return }
+        sorting.insert(entryID)
+        sortErrors[entryID] = nil
+        defer { sorting.remove(entryID) }
+        do {
+            let insights = try await Forge.sortIntoTopics(entry.transcript, existing: topicNames, with: choice)
+            guard var current = self.entry(entryID) else { return }
+            current.meta.categories = insights.categories
+            if !insights.gist.isEmpty { current.meta.gist = insights.gist }
+            try await save(current)
+        } catch {
+            sortErrors[entryID] = error.localizedDescription
+        }
+    }
+
+    /// Sorts every unsorted recording, one at a time.
+    func sortAllUnsorted(with choice: PolisherChoice) async {
+        for entry in unsorted {
+            await sortIntoTopics(entry.id, with: choice)
+        }
+    }
+
+    /// Sets a recording's topics by hand.
+    func setCategories(_ categories: [String], for entryID: String) async throws {
+        guard var entry = entry(entryID) else { throw Self.missingRecording }
+        entry.meta.categories = categories
+        try await save(entry)
+    }
+
+    // MARK: References
+
+    /// Every saved reference with the recording it was found for, newest first.
+    var allReferences: [(reference: Reference, entry: RecordingEntry)] {
+        entries.flatMap { entry in entry.meta.references.map { (reference: $0, entry: entry) } }
+            .sorted { $0.reference.found > $1.reference.found }
+    }
+
+    /// Searches for reading related to a recording and adds what's found to
+    /// its references (skipping ones it already has).
+    func findReferences(for entryID: String, claudeModel: String) async {
+        guard !findingReferences.contains(entryID), let entry = entry(entryID) else { return }
+        findingReferences.insert(entryID)
+        referenceErrors[entryID] = nil
+        referenceNotices[entryID] = nil
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Find references")
+        defer {
+            findingReferences.remove(entryID)
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+        }
+        do {
+            let result = try await Forge.findReferences(for: entry, claudeModel: claudeModel)
+            guard var current = self.entry(entryID) else { return }
+            let known = Set(current.meta.references.compactMap { ReferenceFinder.normalize($0.url) })
+            let new = result.references.filter { reference in
+                ReferenceFinder.normalize(reference.url).map { !known.contains($0) } ?? false
+            }
+            current.meta.references.append(contentsOf: new)
+            try await save(current)
+            referenceNotices[entryID] = switch (new.count, result.references.count) {
+            case (0, 0): "No good matches came up this time."
+            case (0, _): "Nothing new: everything found was already saved."
+            case (1, _): "Found 1 new reference."
+            default: "Found \(new.count) new references."
+            }
+        } catch {
+            referenceErrors[entryID] = error.localizedDescription
+        }
+    }
+
+    func deleteReference(_ referenceID: UUID, from entryID: String) async {
+        guard var entry = entry(entryID) else { return }
+        entry.meta.references.removeAll { $0.id == referenceID }
+        try? await save(entry)
     }
 
     // MARK: Where recordings live

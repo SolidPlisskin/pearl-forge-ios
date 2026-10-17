@@ -83,6 +83,26 @@ struct OpenAICompatibleClient {
 
     /// Sends the polishing instructions and transcript, and returns the reply.
     func refine(_ transcript: String, system: String, model: String) async throws -> Refinement {
+        let reply = try await complete(system: system, user: transcript, model: model,
+                                       failure: "Polishing with \(provider.name) failed")
+        if reply.stopReason == "refusal" {
+            throw PipelineError(message: "\(provider.name) declined to polish this recording. Try again, or try a different AI.")
+        }
+        // A cut-off refinement would silently drop the end of your thought.
+        if reply.stopReason == "length" {
+            throw PipelineError(message: "The polished version was cut off before the end. The recording may be too long for this model; try Summarize, a shorter recording, or a different model.")
+        }
+        guard !reply.text.isEmpty else {
+            throw PipelineError(message: "The polished version came back empty. Please try again.")
+        }
+        return Refinement(text: reply.text, provider: provider, model: reply.model)
+    }
+
+    /// One system message and one user message; returns the reply. A refusal
+    /// is reported as the stop reason "refusal".
+    func complete(system: String, user: String, model: String,
+                  failure: String? = nil) async throws -> Completion {
+        let failure = failure ?? "\(provider.name) request failed"
         var request = URLRequest(url: provider.compatibleBase.appendingPathComponent("chat/completions"),
                                  timeoutInterval: PipelineConfig.requestTimeout)
         request.httpMethod = "POST"
@@ -101,10 +121,10 @@ struct OpenAICompatibleClient {
         // long recording isn't cut short.
         request.httpBody = try JSONEncoder().encode(Body(model: model, messages: [
             .init(role: "system", content: system),
-            .init(role: "user", content: transcript),
+            .init(role: "user", content: user),
         ]))
 
-        let data = try await PipelineHTTP.send(request, failure: "Polishing with \(provider.name) failed")
+        let data = try await PipelineHTTP.send(request, failure: failure)
 
         struct Response: Decodable {
             struct Choice: Decodable {
@@ -125,20 +145,12 @@ struct OpenAICompatibleClient {
         let response = try decoder.decode(Response.self, from: data)
 
         guard let choice = response.choices?.first else {
-            throw PipelineError(message: "Polishing with \(provider.name) failed: \(response.error?.message ?? "no reply came back.")")
+            throw PipelineError(message: "\(failure): \(response.error?.message ?? "no reply came back.")")
         }
-        if choice.message?.refusal?.isEmpty == false || choice.finishReason == "content_filter" {
-            throw PipelineError(message: "\(provider.name) declined to polish this recording. Try again, or try a different AI.")
-        }
-        // A cut-off refinement would silently drop the end of your thought.
-        if choice.finishReason == "length" {
-            throw PipelineError(message: "The polished version was cut off before the end. The recording may be too long for this model; try Summarize, a shorter recording, or a different model.")
-        }
-        let text = Refinement.strippingThinking(choice.message?.content?.text ?? "")
-        guard !text.isEmpty else {
-            throw PipelineError(message: "The polished version came back empty. Please try again.")
-        }
-        return Refinement(text: text, provider: provider, model: response.model ?? model)
+        let refused = choice.message?.refusal?.isEmpty == false || choice.finishReason == "content_filter"
+        return Completion(text: Refinement.strippingThinking(choice.message?.content?.text ?? ""),
+                          model: response.model ?? model,
+                          stopReason: refused ? "refusal" : choice.finishReason)
     }
 
     private func applyHeaders(to request: inout URLRequest) {
