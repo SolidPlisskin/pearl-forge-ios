@@ -10,14 +10,20 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
     case clean
     case tighten
     case summarize
+    /// Typed text spoken exactly as written (or only translated), not polished.
+    case asWritten = "aswritten"
 
     var id: String { rawValue }
+
+    /// The modes that polish, offered for recordings and new pearls.
+    static let polishingModes: [RefinementMode] = [.clean, .tighten, .summarize]
 
     var title: String {
         switch self {
         case .clean: return "Clean"
         case .tighten: return "Tighten"
         case .summarize: return "Summarize"
+        case .asWritten: return "As written"
         }
     }
 
@@ -27,6 +33,7 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
         case .clean: return "light tidy-up, keeps almost everything"
         case .tighten: return "reorganise and de-clutter, keep the nuance"
         case .summarize: return "condensed to the core, still your view"
+        case .asWritten: return "your exact words, not polished"
         }
     }
 
@@ -40,6 +47,7 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
         case .clean: return RefinementPrompts.clean
         case .tighten: return RefinementPrompts.tighten
         case .summarize: return RefinementPrompts.summarize
+        case .asWritten: return ""
         }
     }
 }

@@ -45,16 +45,21 @@ struct RecordingDetailView: View {
                 }
             }
 
-            Section("Your original recording") {
-                if let original = entry.meta.originalFile {
+            Section(entry.meta.isTyped ? "What you wrote" : "Your original recording") {
+                if entry.meta.isTyped {
+                    Text(entry.transcript)
+                        .textSelection(.enabled)
+                } else if let original = entry.meta.originalFile {
                     AudioItemRow(title: "Play what you said", key: "original",
                                  fileExtension: (original as NSString).pathExtension, player: player) {
                         try await library.audioData(original, in: entry.id)
                     }
                 }
-                DisclosureGroup("What you said", isExpanded: $showingTranscript) {
-                    Text(entry.transcript)
-                        .textSelection(.enabled)
+                if !entry.meta.isTyped {
+                    DisclosureGroup("What you said", isExpanded: $showingTranscript) {
+                        Text(entry.transcript)
+                            .textSelection(.enabled)
+                    }
                 }
             }
 
@@ -86,7 +91,9 @@ struct RecordingDetailView: View {
                 if let error = library.forgeErrors[entry.id] {
                     Text(error).foregroundStyle(.red)
                 } else {
-                    Text("Each pearl is a fresh run of your original words through the forge. Your recording itself is never changed.")
+                    Text(entry.meta.isTyped
+                         ? "Each pearl is a fresh run of what you wrote through the forge. Your text itself is never changed."
+                         : "Each pearl is a fresh run of your original words through the forge. Your recording itself is never changed.")
                 }
             }
 

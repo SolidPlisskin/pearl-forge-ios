@@ -91,31 +91,36 @@ final class RecordingLibrary {
 
     // MARK: Saving
 
-    /// Saves a new recording: the original audio, what you said, and its
-    /// first pearl's text. The pearl's audio is added with setAudio.
-    func createRecording(sourceAudio: URL, transcript: String, refinement: Refinement,
+    /// Saves a new recording: the original audio (none for typed text), what
+    /// you said or wrote, and its first pearl's text. The pearl's audio is
+    /// added with setAudio. `refinement` is nil when typed text is spoken as
+    /// written, with no AI involved.
+    func createRecording(sourceAudio: URL?, transcript: String, refinement: Refinement?,
                          mode: RefinementMode, notes: String?, voiceID: String) async throws -> (RecordingEntry, Pearl) {
         let created = Date()
-        let folderName = RecordingFiles.folderName(created: created, refined: refinement.text)
+        let text = refinement?.text ?? transcript
+        let folderName = RecordingFiles.folderName(created: created, refined: text)
         let folder = root.appending(path: folderName, directoryHint: .isDirectory)
-        let ext = sourceAudio.pathExtension.isEmpty ? "m4a" : sourceAudio.pathExtension
-        let originalName = "original.\(ext)"
+        let originalName = sourceAudio.map { "original.\($0.pathExtension.isEmpty ? "m4a" : $0.pathExtension)" }
         let pearl = Pearl(id: UUID(), number: 1, created: created, mode: mode, notes: notes,
-                          refinedBy: refinement.model, polisher: refinement.provider.rawValue, voiceID: voiceID,
+                          refinedBy: refinement?.model, polisher: refinement?.provider.rawValue, voiceID: voiceID,
                           textFile: Pearl.baseName(number: 1, mode: mode) + ".txt", audioFile: nil)
-        let meta = RecordingMeta(title: RecordingFiles.title(for: refinement.text), created: created,
-                                 originalFile: originalName, favorite: false, pearls: [pearl])
+        let meta = RecordingMeta(title: RecordingFiles.title(for: text), created: created,
+                                 originalFile: originalName, favorite: false, pearls: [pearl],
+                                 typed: sourceAudio == nil ? true : nil)
         let metaData = try RecordingFiles.encodeMeta(meta)
         try await offMain {
             try CoordinatedFiles.createDirectory(at: folder)
-            try CoordinatedFiles.copyItem(at: sourceAudio, to: folder.appending(path: originalName))
+            if let sourceAudio, let originalName {
+                try CoordinatedFiles.copyItem(at: sourceAudio, to: folder.appending(path: originalName))
+            }
             try CoordinatedFiles.write(Data(transcript.utf8),
                                        to: folder.appending(path: RecordingFiles.originalTranscriptName))
-            try CoordinatedFiles.write(Data(refinement.text.utf8), to: folder.appending(path: pearl.textFile))
+            try CoordinatedFiles.write(Data(text.utf8), to: folder.appending(path: pearl.textFile))
             try CoordinatedFiles.write(metaData, to: folder.appending(path: RecordingFiles.metaName))
         }
         let entry = RecordingEntry(folderName: folderName, meta: meta, transcript: transcript,
-                                   pearlTexts: [pearl.id: refinement.text])
+                                   pearlTexts: [pearl.id: text])
         replace(entry)
         return (entry, pearl)
     }
@@ -266,9 +271,10 @@ final class RecordingLibrary {
             .sorted { $0.meta.created < $1.meta.created }
     }
 
-    /// Recordings that haven't been sorted into topics yet.
+    /// Recordings that haven't been sorted into topics yet. Typed text, which
+    /// is usually a phrase to say rather than a thought, isn't sorted.
     var unsorted: [RecordingEntry] {
-        entries.filter { $0.meta.categories == nil }
+        entries.filter { $0.meta.categories == nil && !$0.meta.isTyped }
     }
 
     /// Asks the AI which topics a recording belongs to. Failures are kept in

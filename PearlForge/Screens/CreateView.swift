@@ -1,7 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Record a thought, pick how much refinement, and hear it back in your voice.
+/// Record a thought (or type something), pick how much refinement and which
+/// language, and hear it in your voice.
 struct CreateView: View {
     let settings: SettingsModel
     let polishers: PolishersModel
@@ -12,6 +13,7 @@ struct CreateView: View {
     @State private var importing = false
     @State private var confirmingDiscard = false
     @FocusState private var editingRefined: Bool
+    @FocusState private var editingTyped: Bool
 
     /// ElevenLabs set up with a voice chosen.
     private var hasVoice: Bool {
@@ -23,6 +25,12 @@ struct CreateView: View {
         hasVoice && polishers.activeChoice != nil
     }
 
+    /// Everything needed for what's set up right now (typed text spoken as
+    /// written needs no AI).
+    private var canGo: Bool {
+        hasVoice && (!model.needsAI || polishers.activeChoice != nil)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -30,16 +38,23 @@ struct CreateView: View {
                     setupSection
                 }
                 if !model.hasResult {
-                    recorderSection
-                    if model.source != nil {
+                    if !model.recorder.isRecording && model.source == nil && model.transcript == nil {
+                        inputPicker
+                    }
+                    if model.input == .record {
+                        recorderSection
+                    } else {
+                        typeSection
+                    }
+                    if model.hasInput {
                         modeSection
                         actionSection
                     } else if let error = model.errorMessage {
                         Section { Text(error).foregroundStyle(.red) }
                     }
                 }
-                if let transcript = model.transcript {
-                    Section("What you said") {
+                if let transcript = model.transcript, model.input == .record || (model.hasResult && transcript != model.refinedText) {
+                    Section(model.input == .type ? "What you wrote" : "What you said") {
                         Text(transcript)
                             .textSelection(.enabled)
                     }
@@ -53,14 +68,17 @@ struct CreateView: View {
             .toolbar {
                 if model.hasResult && !model.isBusy {
                     ToolbarItem(placement: .primaryAction) {
-                        Button("New recording", systemImage: "plus") {
+                        Button("New", systemImage: "plus") {
                             model.startNew()
                         }
                     }
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") { editingRefined = false }
+                    Button("Done") {
+                        editingRefined = false
+                        editingTyped = false
+                    }
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -92,6 +110,39 @@ struct CreateView: View {
                 Label("Choose the AI that polishes your thoughts in the AI tab.", systemImage: "sparkles")
                 Button("Open the AI tab") { openTab(.ai) }
             }
+        }
+    }
+
+    private var inputPicker: some View {
+        Section {
+            Picker("Input", selection: $model.input) {
+                ForEach(CreateModel.Input.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
+        }
+    }
+
+    private var typeSection: some View {
+        Section {
+            TextEditor(text: $model.typedText)
+                .frame(minHeight: 140)
+                .focused($editingTyped)
+                .disabled(model.isBusy)
+                .overlay(alignment: .topLeading) {
+                    if model.typedText.isEmpty {
+                        Text("Type or paste what you want to say…")
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
+        } header: {
+            Text("What you want to say")
+        } footer: {
+            Text("Spoken in your voice. Pick a language below to translate it first.")
         }
     }
 
@@ -168,17 +219,50 @@ struct CreateView: View {
 
     private var modeSection: some View {
         Section {
-            Picker("Refinement", selection: $model.mode) {
-                ForEach(RefinementMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            if model.input == .record {
+                Picker("Refinement", selection: $model.mode) {
+                    ForEach(RefinementMode.polishingModes) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } else {
+                Picker("Polish", selection: $model.typedMode) {
+                    ForEach([RefinementMode.asWritten] + RefinementMode.polishingModes) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
             }
-            .pickerStyle(.segmented)
-            .disabled(model.isBusy)
+            Picker("Speak in", selection: $model.language) {
+                Text(model.input == .type ? "The language I wrote in" : "The language I spoke in").tag(SpeechLanguage?.none)
+                ForEach(SpeechLanguages.all) { language in
+                    Text(language.name).tag(SpeechLanguage?.some(language))
+                }
+            }
+            .pickerStyle(.navigationLink)
         } header: {
-            Text("How much refinement?")
+            Text(model.input == .record ? "How much refinement?" : "Options")
         } footer: {
-            Text(model.mode.subtitleSentence)
+            Text(modeFooter)
+        }
+        .disabled(model.isBusy)
+    }
+
+    private var modeFooter: String {
+        var text = model.activeMode.subtitleSentence
+        if let language = model.language {
+            text += " Then spoken in \(language.name), in your voice."
+        }
+        return text
+    }
+
+    private var actionTitle: String {
+        if model.errorMessage != nil { return "Try again" }
+        switch (model.input, model.language != nil) {
+        case (.record, false): return "Refine & speak"
+        case (.record, true): return "Refine, translate & speak"
+        case (.type, true): return "Translate & speak"
+        case (.type, false): return model.typedMode == .asWritten ? "Speak in my voice" : "Polish & speak"
         }
     }
 
@@ -191,25 +275,35 @@ struct CreateView: View {
                 }
             } else {
                 Button {
+                    editingTyped = false
                     Task { await refineAndSpeak() }
                 } label: {
-                    Text(model.errorMessage == nil ? "Refine & speak" : "Try again")
+                    Text(actionTitle)
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(!isReady)
+                .disabled(!canGo)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
             }
         } footer: {
             if let error = model.errorMessage {
                 Text(error).foregroundStyle(.red)
-            } else if isReady, let choice = polishers.activeChoice {
-                Text("Polishing with \(polishers.label(for: choice)), speaking as \(settings.selectedVoiceName.isEmpty ? "your voice" : settings.selectedVoiceName).")
+            } else if canGo {
+                Text(actionFooter)
             }
         }
+    }
+
+    private var actionFooter: String {
+        let voice = settings.selectedVoiceName.isEmpty ? "your voice" : settings.selectedVoiceName
+        guard model.needsAI, let choice = polishers.activeChoice else {
+            return "Speaking as \(voice), exactly as written."
+        }
+        let verb = model.activeMode == .asWritten ? "Translating" : "Polishing"
+        return "\(verb) with \(polishers.label(for: choice)), speaking as \(voice)."
     }
 
     private var refinedSection: some View {
@@ -219,11 +313,7 @@ struct CreateView: View {
                 .focused($editingRefined)
                 .disabled(model.isBusy)
         } header: {
-            if let mode = model.refinedMode {
-                Text("Refined · \(mode.title)")
-            } else {
-                Text("Refined")
-            }
+            Text(refinedHeader)
         } footer: {
             Text("If anything's off, fix it here, then regenerate the audio.")
         }
@@ -265,9 +355,17 @@ struct CreateView: View {
         }
     }
 
+    private var refinedHeader: String {
+        let mode = model.refinedMode ?? model.activeMode
+        let language = model.language.map { " · In \($0.name)" } ?? ""
+        switch mode {
+        case .asWritten: return model.language == nil ? "As written" : "Translated" + language
+        default: return "Refined · \(mode.title)" + language
+        }
+    }
+
     private func refineAndSpeak() async {
-        guard let choice = polishers.activeChoice else { return }
-        await model.refineAndSpeak(voiceID: settings.selectedVoiceID, polisher: choice, library: library)
+        await model.refineAndSpeak(voiceID: settings.selectedVoiceID, polisher: polishers.activeChoice, library: library)
     }
 }
 

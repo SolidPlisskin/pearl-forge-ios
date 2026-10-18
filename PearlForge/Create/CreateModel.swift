@@ -2,22 +2,43 @@ import AVFoundation
 import Observation
 import UIKit
 
-/// Drives the Create screen: record (or import) a voice note, then transcribe
-/// it, refine it, save it as a new recording, and speak its first pearl back
-/// in your voice. A failed step can be retried without repeating the steps
-/// before it.
+/// Drives the Create screen: record (or import) a voice note, or type some
+/// text; then transcribe it, refine and/or translate it, save it, and speak
+/// its first pearl in your voice. A failed step can be retried without
+/// repeating the steps before it.
 @MainActor
 @Observable
 final class CreateModel {
+    enum Input: String, CaseIterable {
+        case record = "Record"
+        case type = "Type"
+    }
+
     private static let modeKey = "refinementMode"
+    private static let typedModeKey = "typedRefinementMode"
     private static let pendingRecordingURL = URL.temporaryDirectory.appending(path: "pending-recording.m4a")
 
     let recorder = VoiceRecorder()
     let player = AudioPlayback()
 
+    var input = Input.record
+
+    /// How much to polish a recording.
     var mode: RefinementMode {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) }
     }
+
+    /// Typed text, and how much to polish it ("As written" by default).
+    var typedText = ""
+    var typedMode: RefinementMode {
+        didSet { UserDefaults.standard.set(typedMode.rawValue, forKey: Self.typedModeKey) }
+    }
+
+    /// The language to speak in; nil keeps the language you used.
+    var language: SpeechLanguage?
+
+    /// The mode in use for what's being made now.
+    var activeMode: RefinementMode { input == .type ? typedMode : mode }
 
     /// The voice note waiting to be processed, recorded or imported.
     private(set) var source: URL?
@@ -39,11 +60,25 @@ final class CreateModel {
     private var spokenText: String?
 
     init() {
-        mode = UserDefaults.standard.string(forKey: Self.modeKey).flatMap(RefinementMode.init) ?? .clean
+        let saved = UserDefaults.standard.string(forKey: Self.modeKey).flatMap(RefinementMode.init)
+        mode = saved.flatMap { RefinementMode.polishingModes.contains($0) ? $0 : nil } ?? .clean
+        typedMode = UserDefaults.standard.string(forKey: Self.typedModeKey).flatMap(RefinementMode.init) ?? .asWritten
     }
 
     var isBusy: Bool { step != nil }
     var hasResult: Bool { recordingID != nil }
+
+    /// There's a voice note or some typed text ready to process.
+    var hasInput: Bool {
+        switch input {
+        case .record: return source != nil
+        case .type: return !typedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// Whether processing calls an AI at all (typed text spoken as written,
+    /// in its own language, doesn't).
+    var needsAI: Bool { activeMode != .asWritten || language != nil }
 
     /// True once you've edited the refined text since the audio was made.
     var hasUnspokenEdits: Bool {
@@ -99,6 +134,7 @@ final class CreateModel {
     /// saved in History, so nothing is lost.
     func startNew() {
         player.unload()
+        if hasResult { typedText = "" }
         source = nil
         sourceDuration = nil
         errorMessage = nil
@@ -113,10 +149,10 @@ final class CreateModel {
 
     // MARK: Pipeline
 
-    /// Runs whichever steps haven't succeeded yet: transcribe, refine (and
-    /// save), then speak.
-    func refineAndSpeak(voiceID: String, polisher: PolisherChoice, library: RecordingLibrary) async {
-        guard let source, step == nil else { return }
+    /// Runs whichever steps haven't succeeded yet: transcribe (recordings
+    /// only), refine and/or translate (and save), then speak.
+    func refineAndSpeak(voiceID: String, polisher: PolisherChoice?, library: RecordingLibrary) async {
+        guard hasInput, step == nil else { return }
         errorMessage = nil
         // Give the requests time to finish if the phone is locked mid-way.
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Refine and speak")
@@ -124,20 +160,40 @@ final class CreateModel {
 
         do {
             if transcript == nil {
-                step = .transcribing
-                transcript = try await Forge.transcribe(source)
+                switch input {
+                case .record:
+                    guard let source else { return }
+                    step = .transcribing
+                    transcript = try await Forge.transcribe(source)
+                case .type:
+                    transcript = typedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
             }
             if recordingID == nil, let transcript {
-                step = .refining
-                let refinement = try await Forge.refine(transcript, mode: mode, notes: nil, with: polisher)
-                let (entry, pearl) = try await library.createRecording(sourceAudio: source, transcript: transcript,
-                                                                       refinement: refinement, mode: mode,
-                                                                       notes: nil, voiceID: voiceID)
+                let mode = activeMode
+                let notes = language.map(SpeechLanguages.request)
+                var refinement: Refinement?
+                if needsAI {
+                    guard let polisher else {
+                        throw PipelineError(message: "Choose the AI that polishes your thoughts in the AI tab first.")
+                    }
+                    step = language != nil ? .translating : .refining
+                    if mode == .asWritten, let language {
+                        refinement = try await Forge.translate(transcript, to: language, with: polisher)
+                    } else {
+                        refinement = try await Forge.refine(transcript, mode: mode, notes: notes, with: polisher)
+                    }
+                }
+                let (entry, pearl) = try await library.createRecording(
+                    sourceAudio: input == .record ? source : nil, transcript: transcript, refinement: refinement,
+                    mode: mode, notes: notes, voiceID: voiceID)
                 recordingID = entry.id
                 pearlID = pearl.id
-                // Sort it into topics in the background; it doesn't hold anything up.
-                Task { await library.sortIntoTopics(entry.id, with: polisher) }
-                refinedText = refinement.text
+                // Sort recordings into topics in the background; it doesn't hold anything up.
+                if input == .record, let polisher {
+                    Task { await library.sortIntoTopics(entry.id, with: polisher) }
+                }
+                refinedText = refinement?.text ?? transcript
                 refinedMode = mode
             }
             step = .speaking

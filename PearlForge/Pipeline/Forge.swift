@@ -2,12 +2,13 @@ import Foundation
 
 /// The steps a voice note goes through, for progress messages.
 enum ForgeStep: Equatable {
-    case transcribing, refining, speaking
+    case transcribing, refining, translating, speaking
 
     var progressLabel: String {
         switch self {
         case .transcribing: return "Transcribing…"
         case .refining: return "Refining (keeping your meaning)…"
+        case .translating: return "Translating (keeping your meaning)…"
         case .speaking: return "Speaking it back in your voice…"
         }
     }

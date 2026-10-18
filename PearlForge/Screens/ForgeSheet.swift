@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Choose how to forge another pearl from a recording: the mode, which AI
-/// polishes it, and anything you want different this time.
+/// polishes it, the language to speak it in, and anything you want different
+/// this time.
 struct ForgeSheet: View {
     let polishers: PolishersModel
     let onForge: (RefinementMode, String?, PolisherChoice) -> Void
@@ -9,11 +10,12 @@ struct ForgeSheet: View {
     @State private var mode: RefinementMode
     @State private var provider: PolisherProvider
     @State private var notes = ""
+    @State private var language: SpeechLanguage?
     @Environment(\.dismiss) private var dismiss
 
     init(initialMode: RefinementMode, polishers: PolishersModel,
          onForge: @escaping (RefinementMode, String?, PolisherChoice) -> Void) {
-        _mode = State(initialValue: initialMode)
+        _mode = State(initialValue: RefinementMode.polishingModes.contains(initialMode) ? initialMode : .clean)
         _provider = State(initialValue: polishers.activeChoice?.provider
                           ?? polishers.readyProviders.first ?? .anthropic)
         self.polishers = polishers
@@ -25,7 +27,7 @@ struct ForgeSheet: View {
             Form {
                 Section {
                     Picker("Refinement", selection: $mode) {
-                        ForEach(RefinementMode.allCases) { mode in
+                        ForEach(RefinementMode.polishingModes) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
@@ -49,6 +51,20 @@ struct ForgeSheet: View {
                 }
 
                 Section {
+                    Picker("Speak in", selection: $language) {
+                        Text("The recording's language").tag(SpeechLanguage?.none)
+                        ForEach(SpeechLanguages.all) { language in
+                            Text(language.name).tag(SpeechLanguage?.some(language))
+                        }
+                    }
+                    .pickerStyle(.navigationLink)
+                } footer: {
+                    if let language {
+                        Text("Translated into \(language.name) and spoken in your voice. Your meaning and tone are kept.")
+                    }
+                }
+
+                Section {
                     TextField("Optional", text: $notes, axis: .vertical)
                         .lineLimit(3...8)
                 } header: {
@@ -66,7 +82,10 @@ struct ForgeSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Forge") {
                         guard let choice = polishers.choice(for: provider) else { return }
-                        let request = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let typed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let request = [language.map(SpeechLanguages.request), typed.isEmpty ? nil : typed]
+                            .compactMap { $0 }
+                            .joined(separator: " ")
                         onForge(mode, request.isEmpty ? nil : request, choice)
                         dismiss()
                     }

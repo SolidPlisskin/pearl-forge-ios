@@ -89,9 +89,14 @@ struct RecordingMeta: Codable, Equatable {
     /// One first-person sentence summing up the thought.
     var gist: String?
     var references: [Reference]
+    /// True for text you typed rather than recorded; it has no original audio.
+    var typed: Bool?
+
+    var isTyped: Bool { typed == true }
 
     init(title: String, created: Date, originalFile: String?, favorite: Bool, pearls: [Pearl],
-         categories: [String]? = nil, gist: String? = nil, references: [Reference] = []) {
+         categories: [String]? = nil, gist: String? = nil, references: [Reference] = [], typed: Bool? = nil) {
+        self.typed = typed
         self.title = title
         self.created = created
         self.originalFile = originalFile
@@ -103,7 +108,7 @@ struct RecordingMeta: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case title, created, favorite, pearls, categories, gist, references
+        case title, created, favorite, pearls, categories, gist, references, typed
         case originalFile = "original_file"
         // The first version saved one refinement per recording at the top level.
         case mode
@@ -124,6 +129,7 @@ struct RecordingMeta: Codable, Equatable {
         categories = try container.decodeIfPresent([String].self, forKey: .categories)
         gist = try container.decodeIfPresent(String.self, forKey: .gist)
         references = try container.decodeIfPresent([Reference].self, forKey: .references) ?? []
+        typed = try container.decodeIfPresent(Bool.self, forKey: .typed)
         if let pearls = try container.decodeIfPresent([Pearl].self, forKey: .pearls) {
             self.pearls = pearls
         } else {
@@ -151,6 +157,7 @@ struct RecordingMeta: Codable, Equatable {
         try container.encodeIfPresent(categories, forKey: .categories)
         try container.encodeIfPresent(gist, forKey: .gist)
         try container.encode(references, forKey: .references)
+        try container.encodeIfPresent(typed, forKey: .typed)
     }
 }
 
