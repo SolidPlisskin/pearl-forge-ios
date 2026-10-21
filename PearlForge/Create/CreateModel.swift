@@ -4,8 +4,10 @@ import UIKit
 
 /// Drives the Create screen: record (or import) a voice note, or type some
 /// text; then transcribe it, refine and/or translate it, save it, and speak
-/// its first pearl in your voice. A failed step can be retried without
-/// repeating the steps before it.
+/// its first pearl in your voice. If what you said asks for a lecture ("give a
+/// lecture on…"), it plans one instead and shows what it will cost before
+/// anything is spent. A failed step can be retried without repeating the
+/// steps before it.
 @MainActor
 @Observable
 final class CreateModel {
@@ -14,8 +16,24 @@ final class CreateModel {
         case type = "Type"
     }
 
+    /// A lecture you asked for, waiting for you to confirm it.
+    struct LecturePlan: Equatable {
+        var topic: String
+        var minutes: Int
+        var model: String
+    }
+
+    /// The Claude models offered for lectures; both search the web and
+    /// PubMed. Sonnet 5.5 costs about half as much.
+    static let lectureModels = ["claude-sonnet-5-5", "claude-opus-5-5"]
+
+    static func lectureModelName(_ id: String) -> String {
+        ["claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-opus-5-5": "Claude Opus 5.5"][id] ?? id
+    }
+
     private static let modeKey = "refinementMode"
     private static let typedModeKey = "typedRefinementMode"
+    private static let lectureModelKey = "lecture.model"
     private static let pendingRecordingURL = URL.temporaryDirectory.appending(path: "pending-recording.m4a")
 
     let recorder = VoiceRecorder()
@@ -58,6 +76,17 @@ final class CreateModel {
     private(set) var shareURL: URL?
     /// The text the current audio was made from.
     private var spokenText: String?
+
+    /// The lecture you asked for, once what you said has been understood.
+    var lecture: LecturePlan?
+    /// Set when you chose to treat a lecture request as an ordinary thought.
+    private var ignoresLectureRequest = false
+    private(set) var researchProgress: ResearchProgress?
+    /// A finished lecture's details and the sources it draws on.
+    private(set) var lectureInfo: LectureInfo?
+    private(set) var lectureSources: [Reference] = []
+    /// Sources Claude named that couldn't be confirmed, so weren't kept.
+    private(set) var unconfirmedSources = 0
 
     init() {
         let saved = UserDefaults.standard.string(forKey: Self.modeKey).flatMap(RefinementMode.init)
@@ -139,6 +168,12 @@ final class CreateModel {
         sourceDuration = nil
         errorMessage = nil
         transcript = nil
+        lecture = nil
+        ignoresLectureRequest = false
+        researchProgress = nil
+        lectureInfo = nil
+        lectureSources = []
+        unconfirmedSources = 0
         refinedText = ""
         refinedMode = nil
         recordingID = nil
@@ -168,6 +203,15 @@ final class CreateModel {
                 case .type:
                     transcript = typedText.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+            }
+            if recordingID == nil, let transcript, !ignoresLectureRequest,
+               let request = LectureRequest.parse(transcript) {
+                // Asked for a lecture: show the plan and its cost first.
+                lecture = LecturePlan(topic: request.topic,
+                                      minutes: request.minutes.map(LectureLength.nearest) ?? LectureLength.standard,
+                                      model: Self.savedLectureModel)
+                step = nil
+                return
             }
             if recordingID == nil, let transcript {
                 let mode = activeMode
@@ -204,6 +248,88 @@ final class CreateModel {
         step = nil
     }
 
+    // MARK: Lectures
+
+    private static var savedLectureModel: String {
+        UserDefaults.standard.string(forKey: lectureModelKey).flatMap { lectureModels.contains($0) ? $0 : nil }
+            ?? lectureModels[0]
+    }
+
+    /// Researches and writes the planned lecture, saves it with its sources,
+    /// and speaks it in your voice. `estimate` is the unadjusted Claude
+    /// estimate shown beforehand, saved so later estimates can learn from it.
+    func giveLecture(voiceID: String, topicSorter: PolisherChoice?, library: RecordingLibrary,
+                     estimate: Double?, voiceRate: Double?) async {
+        guard let plan = lecture, step == nil else { return }
+        let topic = plan.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty else {
+            errorMessage = "Say or type what the lecture should be about."
+            return
+        }
+        errorMessage = nil
+        UserDefaults.standard.set(plan.model, forKey: Self.lectureModelKey)
+        // Research takes a few minutes; keep the screen on so the phone
+        // doesn't lock and pause it.
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Give a lecture")
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer {
+            UIApplication.shared.isIdleTimerDisabled = false
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+        }
+
+        do {
+            if recordingID == nil {
+                step = .researching
+                researchProgress = ResearchProgress()
+                let written = try await Forge.writeLecture(topic: topic, minutes: plan.minutes, language: language,
+                                                           model: plan.model) { @MainActor [weak self] progress in
+                    self?.researchProgress = progress
+                }
+                let info = LectureInfo(topic: topic, minutes: plan.minutes, model: written.model,
+                                       language: language?.code, summary: written.summary.isEmpty ? nil : written.summary,
+                                       claudeCost: written.cost, estimatedClaudeCost: estimate,
+                                       webSearches: written.usage.webSearches, characters: written.script.count,
+                                       dollarsPerThousandCredits: voiceRate)
+                let (entry, pearl) = try await library.createLecture(
+                    sourceAudio: input == .record ? source : nil, request: transcript ?? topic,
+                    lecture: written, info: info, voiceID: voiceID)
+                recordingID = entry.id
+                pearlID = pearl.id
+                refinedText = written.script
+                refinedMode = .lecture
+                lectureInfo = info
+                lectureSources = written.references
+                unconfirmedSources = written.unverified
+                // Sort it into your topics so it plays alongside related thoughts.
+                if let topicSorter {
+                    Task { await library.sortIntoTopics(entry.id, with: topicSorter) }
+                }
+            }
+            researchProgress = nil
+            step = .speaking
+            try await speak(voiceID: voiceID, library: library)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        researchProgress = nil
+        step = nil
+    }
+
+    /// Treats a lecture request as an ordinary thought and refines and speaks
+    /// it as usual.
+    func speakInsteadOfLecture(voiceID: String, polisher: PolisherChoice?, library: RecordingLibrary) async {
+        ignoresLectureRequest = true
+        lecture = nil
+        await refineAndSpeak(voiceID: voiceID, polisher: polisher, library: library)
+    }
+
+    /// Goes back to editing the text you typed.
+    func editTypedText() {
+        lecture = nil
+        transcript = nil
+        errorMessage = nil
+    }
+
     /// Re-speaks the (edited) refined text and replaces the saved audio.
     func regenerateAudio(voiceID: String, library: RecordingLibrary) async {
         guard recordingID != nil, step == nil else { return }
@@ -231,7 +357,8 @@ final class CreateModel {
         let audio = try await Forge.speak(text, voiceID: voiceID)
         try await library.setAudio(audio, of: pearlID, in: recordingID, voiceID: voiceID)
         spokenText = text
-        shareURL = try? RecordingFiles.shareCopy(of: audio, title: RecordingFiles.title(for: text), pearlNumber: 1)
+        let title = library.entry(recordingID)?.meta.title ?? RecordingFiles.title(for: text)
+        shareURL = try? RecordingFiles.shareCopy(of: audio, title: title, pearlNumber: 1)
         player.load(audio, key: pearlID.uuidString)
         player.play()
     }

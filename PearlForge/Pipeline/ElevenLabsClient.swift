@@ -55,6 +55,32 @@ struct ElevenLabsClient {
             }
     }
 
+    // MARK: Credits
+
+    /// Your plan and its credits this month. Needs a key that's allowed to
+    /// read your account (ElevenLabs' "User" read permission).
+    func credits() async throws -> VoiceCredits {
+        var request = URLRequest(url: PipelineConfig.elevenLabsBase.appending(path: "user/subscription"),
+                                 timeoutInterval: 60)
+        request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+        let data = try await PipelineHTTP.send(request, failure: "Could not read your ElevenLabs credits")
+
+        struct Response: Decodable {
+            let tier: String?
+            let characterCount: Int?
+            let characterLimit: Int?
+            let nextCharacterCountResetUnix: Double?
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let response = try decoder.decode(Response.self, from: data)
+        guard let used = response.characterCount, let limit = response.characterLimit else {
+            throw PipelineError(message: "ElevenLabs didn't say how many credits you have.")
+        }
+        return VoiceCredits(tier: response.tier ?? "", used: used, limit: limit,
+                            resets: response.nextCharacterCountResetUnix.map(Date.init(timeIntervalSince1970:)))
+    }
+
     // MARK: Speech-to-text
 
     /// A faithful transcript of the recording at `fileURL`.

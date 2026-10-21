@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// One recording: your original voice note and transcript, its topics, every
-/// pearl forged from it, and reading found for it.
+/// pearl forged from it, and reading found for it. For a lecture: what you
+/// asked for, the lecture, its sources and what it cost.
 struct RecordingDetailView: View {
     let entryID: String
     let library: RecordingLibrary
@@ -29,6 +30,10 @@ struct RecordingDetailView: View {
                     .font(.headline)
                 Text(entry.meta.created.formatted(date: .complete, time: .shortened))
                     .foregroundStyle(.secondary)
+                if let lecture = entry.meta.lecture {
+                    Label("Lecture · about \(lecture.minutes) min", systemImage: "graduationcap")
+                        .foregroundStyle(.secondary)
+                }
                 if let gist = entry.meta.gist, !gist.isEmpty {
                     Text(gist)
                         .font(.subheadline)
@@ -45,17 +50,18 @@ struct RecordingDetailView: View {
                 }
             }
 
-            Section(entry.meta.isTyped ? "What you wrote" : "Your original recording") {
-                if entry.meta.isTyped {
+            Section(originalHeader(entry)) {
+                if entry.meta.isTyped || entry.meta.lecture != nil {
                     Text(entry.transcript)
                         .textSelection(.enabled)
-                } else if let original = entry.meta.originalFile {
-                    AudioItemRow(title: "Play what you said", key: "original",
+                }
+                if !entry.meta.isTyped, let original = entry.meta.originalFile {
+                    AudioItemRow(title: entry.meta.lecture == nil ? "Play what you said" : "Play your request", key: "original",
                                  fileExtension: (original as NSString).pathExtension, player: player) {
                         try await library.audioData(original, in: entry.id)
                     }
                 }
-                if !entry.meta.isTyped {
+                if !entry.meta.isTyped && entry.meta.lecture == nil {
                     DisclosureGroup("What you said", isExpanded: $showingTranscript) {
                         Text(entry.transcript)
                             .textSelection(.enabled)
@@ -78,18 +84,22 @@ struct RecordingDetailView: View {
                         PearlRow(pearl: pearl, text: entry.pearlTexts[pearl.id] ?? "", polishers: polishers)
                     }
                 }
-                Button {
-                    showingForgeSheet = true
-                } label: {
-                    Label("Forge a new pearl", systemImage: "sparkles")
+                if entry.meta.lecture == nil {
+                    Button {
+                        showingForgeSheet = true
+                    } label: {
+                        Label("Forge a new pearl", systemImage: "sparkles")
+                    }
+                    .disabled(library.forging[entry.id] != nil || settings.selectedVoiceID.isEmpty
+                              || polishers.readyProviders.isEmpty)
                 }
-                .disabled(library.forging[entry.id] != nil || settings.selectedVoiceID.isEmpty
-                          || polishers.readyProviders.isEmpty)
             } header: {
-                Text("Pearls")
+                Text(entry.meta.lecture == nil ? "Pearls" : "The lecture")
             } footer: {
                 if let error = library.forgeErrors[entry.id] {
                     Text(error).foregroundStyle(.red)
+                } else if entry.meta.lecture != nil {
+                    Text("Open it to read or edit the text and speak it again. For a different take, ask for another lecture on the Create screen.")
                 } else {
                     Text(entry.meta.isTyped
                          ? "Each pearl is a fresh run of what you wrote through the forge. Your text itself is never changed."
@@ -98,8 +108,12 @@ struct RecordingDetailView: View {
             }
 
             readingSection(entry)
+
+            if let lecture = entry.meta.lecture {
+                lectureCostSection(lecture)
+            }
         }
-        .navigationTitle("Recording")
+        .navigationTitle(entry.meta.lecture == nil ? "Recording" : "Lecture")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -197,7 +211,7 @@ struct RecordingDetailView: View {
                 .disabled(polishers.status[.anthropic] == .notSet)
             }
         } header: {
-            Text("Reading")
+            Text(entry.meta.lecture == nil ? "Reading" : "Sources")
         } footer: {
             if let error = library.referenceErrors[entry.id] {
                 Text(error).foregroundStyle(.red)
@@ -205,9 +219,32 @@ struct RecordingDetailView: View {
                 Text("Finding reading uses Claude's web search. Add your Claude key in the AI tab.")
             } else if let notice = library.referenceNotices[entry.id] {
                 Text(notice)
+            } else if entry.meta.lecture != nil {
+                Text("What the lecture draws on, each checked against the actual search results. Also kept in the Reading tab.")
             } else if entry.meta.references.isEmpty {
                 Text("Searches PubMed for peer-reviewed research and the web for essays, articles and blog posts related to this thought. Everything found is also kept in the Reading tab.")
             }
+        }
+    }
+
+    private func originalHeader(_ entry: RecordingEntry) -> String {
+        if entry.meta.lecture != nil { return "What you asked for" }
+        return entry.meta.isTyped ? "What you wrote" : "Your original recording"
+    }
+
+    private func lectureCostSection(_ lecture: LectureInfo) -> some View {
+        Section {
+            CostRow(title: "Research & writing", value: lecture.claudeCost?.dollars ?? "not known",
+                    detail: CreateModel.lectureModelName(lecture.model)
+                        + (lecture.webSearches.map { " · \($0) web search\($0 == 1 ? "" : "es")" } ?? ""))
+            if let characters = lecture.characters {
+                CostRow(title: "Your voice", value: lecture.voiceCost.map { "about " + $0.dollars } ?? "free plan",
+                        detail: "\(characters.formatted()) ElevenLabs credits")
+            }
+        } header: {
+            Text("What it cost")
+        } footer: {
+            Text("When it was made. Speaking it again uses the ElevenLabs credits again.")
         }
     }
 

@@ -217,7 +217,11 @@ private struct HistoryRow: View {
 
     private var pearlCount: String {
         var pearls = entry.meta.pearls.count == 1 ? "1 pearl" : "\(entry.meta.pearls.count) pearls"
-        if entry.meta.isTyped { pearls = "Typed · " + pearls }
+        if let lecture = entry.meta.lecture {
+            pearls = "Lecture · about \(lecture.minutes) min"
+        } else if entry.meta.isTyped {
+            pearls = "Typed · " + pearls
+        }
         guard let topics = entry.meta.categories, !topics.isEmpty else { return pearls }
         return pearls + " · " + topics.joined(separator: ", ")
     }

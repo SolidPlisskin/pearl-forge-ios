@@ -99,19 +99,47 @@ final class RecordingLibrary {
                          mode: RefinementMode, notes: String?, voiceID: String) async throws -> (RecordingEntry, Pearl) {
         let created = Date()
         let text = refinement?.text ?? transcript
-        let folderName = RecordingFiles.folderName(created: created, refined: text)
-        let folder = root.appending(path: folderName, directoryHint: .isDirectory)
-        let originalName = sourceAudio.map { "original.\($0.pathExtension.isEmpty ? "m4a" : $0.pathExtension)" }
         let pearl = Pearl(id: UUID(), number: 1, created: created, mode: mode, notes: notes,
                           refinedBy: refinement?.model, polisher: refinement?.provider.rawValue, voiceID: voiceID,
                           textFile: Pearl.baseName(number: 1, mode: mode) + ".txt", audioFile: nil)
         let meta = RecordingMeta(title: RecordingFiles.title(for: text), created: created,
-                                 originalFile: originalName, favorite: false, pearls: [pearl],
+                                 originalFile: sourceAudio.map(Self.originalName), favorite: false, pearls: [pearl],
                                  typed: sourceAudio == nil ? true : nil)
+        return try await saveNew(meta, pearl: pearl, text: text, transcript: transcript, sourceAudio: sourceAudio)
+    }
+
+    /// Saves a new lecture: what you asked for (and the recording of you
+    /// asking, if you said it), the lecture itself as pearl 1, and the
+    /// sources it draws on, which also appear in the Reading tab.
+    func createLecture(sourceAudio: URL?, request: String, lecture: WrittenLecture, info: LectureInfo,
+                       voiceID: String) async throws -> (RecordingEntry, Pearl) {
+        let created = Date()
+        let pearl = Pearl(id: UUID(), number: 1, created: created, mode: .lecture, notes: nil,
+                          refinedBy: lecture.model, polisher: PolisherProvider.anthropic.rawValue, voiceID: voiceID,
+                          textFile: Pearl.baseName(number: 1, mode: .lecture) + ".txt", audioFile: nil)
+        let meta = RecordingMeta(title: lecture.title, created: created,
+                                 originalFile: sourceAudio.map(Self.originalName), favorite: false, pearls: [pearl],
+                                 gist: lecture.summary.isEmpty ? nil : lecture.summary,
+                                 references: lecture.references, typed: sourceAudio == nil ? true : nil,
+                                 lecture: info)
+        return try await saveNew(meta, pearl: pearl, text: lecture.script, transcript: request, sourceAudio: sourceAudio)
+    }
+
+    /// "original.m4a", keeping the recording's own file type.
+    private static func originalName(_ sourceAudio: URL) -> String {
+        "original.\(sourceAudio.pathExtension.isEmpty ? "m4a" : sourceAudio.pathExtension)"
+    }
+
+    /// Writes a new recording's folder: its original audio (if any), what you
+    /// said or wrote, its first pearl's text, and meta.json.
+    private func saveNew(_ meta: RecordingMeta, pearl: Pearl, text: String, transcript: String,
+                         sourceAudio: URL?) async throws -> (RecordingEntry, Pearl) {
+        let folderName = RecordingFiles.folderName(created: meta.created, refined: meta.lecture == nil ? text : meta.title)
+        let folder = root.appending(path: folderName, directoryHint: .isDirectory)
         let metaData = try RecordingFiles.encodeMeta(meta)
         try await offMain {
             try CoordinatedFiles.createDirectory(at: folder)
-            if let sourceAudio, let originalName {
+            if let sourceAudio, let originalName = meta.originalFile {
                 try CoordinatedFiles.copyItem(at: sourceAudio, to: folder.appending(path: originalName))
             }
             try CoordinatedFiles.write(Data(transcript.utf8),
@@ -123,6 +151,16 @@ final class RecordingLibrary {
                                    pearlTexts: [pearl.id: text])
         replace(entry)
         return (entry, pearl)
+    }
+
+    /// How far off past lecture estimates ran for a model (what Claude
+    /// actually charged over the unadjusted estimate), newest first.
+    func lectureEstimateRatios(model: String) -> [Double] {
+        entries.compactMap { entry in
+            guard let info = entry.meta.lecture, info.model == model, let actual = info.claudeCost,
+                  let estimated = info.estimatedClaudeCost, estimated > 0 else { return nil }
+            return actual / estimated
+        }
     }
 
     /// Adds another pearl's text to a recording.
@@ -272,9 +310,10 @@ final class RecordingLibrary {
     }
 
     /// Recordings that haven't been sorted into topics yet. Typed text, which
-    /// is usually a phrase to say rather than a thought, isn't sorted.
+    /// is usually a phrase to say rather than a thought, isn't sorted, but a
+    /// lecture you typed the request for is.
     var unsorted: [RecordingEntry] {
-        entries.filter { $0.meta.categories == nil && !$0.meta.isTyped }
+        entries.filter { $0.meta.categories == nil && (!$0.meta.isTyped || $0.meta.lecture != nil) }
     }
 
     /// Asks the AI which topics a recording belongs to. Failures are kept in
@@ -284,11 +323,15 @@ final class RecordingLibrary {
         sorting.insert(entryID)
         sortErrors[entryID] = nil
         defer { sorting.remove(entryID) }
+        // A lecture is sorted by what it covers, not by the request for it,
+        // and keeps its own summary as its gist.
+        let text = entry.meta.lecture.map { "A lecture titled “\(entry.meta.title)”. \($0.summary ?? $0.topic)" }
+            ?? entry.transcript
         do {
-            let insights = try await Forge.sortIntoTopics(entry.transcript, existing: topicNames, with: choice)
+            let insights = try await Forge.sortIntoTopics(text, existing: topicNames, with: choice)
             guard var current = self.entry(entryID) else { return }
             current.meta.categories = insights.categories
-            if !insights.gist.isEmpty { current.meta.gist = insights.gist }
+            if !insights.gist.isEmpty && current.meta.lecture == nil { current.meta.gist = insights.gist }
             try await save(current)
         } catch {
             sortErrors[entryID] = error.localizedDescription

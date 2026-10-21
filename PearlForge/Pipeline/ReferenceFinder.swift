@@ -9,7 +9,6 @@ struct ReferenceFinder {
     let workspaceID: String?
     let model: String
 
-    private static let maxSteps = 12
     private static let maxReferences = 10
 
     struct Result {
@@ -20,106 +19,22 @@ struct ReferenceFinder {
     }
 
     func find(transcript: String, gist: String?, categories: [String]) async throws -> Result {
-        var messages: [[String: Any]] = [["role": "user", "content": Self.userMessage(transcript, gist: gist, categories: categories)]]
-        var seenURLs: [String: String] = [:]
-        var papers: [String: PubMedPaper] = [:]
-        var nudged = false
-
-        for _ in 0..<Self.maxSteps {
-            let response = try await send(messages)
-            let content = response["content"] as? [[String: Any]] ?? []
-            Self.collectURLs(in: content, into: &seenURLs)
-
-            switch response["stop_reason"] as? String {
-            case "pause_turn":
-                // A long search paused; send the turn back unchanged to resume.
-                messages.append(["role": "assistant", "content": content])
-
-            case "tool_use":
-                let calls = content.filter { $0["type"] as? String == "tool_use" }
-                if let save = calls.first(where: { $0["name"] as? String == "save_references" }) {
-                    return Self.verify(save["input"], seenURLs: seenURLs, papers: papers)
-                }
-                var results: [[String: Any]] = []
-                for call in calls {
-                    results.append(await run(call, papers: &papers))
-                }
-                messages.append(["role": "assistant", "content": content])
-                messages.append(["role": "user", "content": results])
-
-            case "end_turn" where !nudged:
-                // It stopped without saving; ask once more.
-                nudged = true
-                messages.append(["role": "assistant", "content": content])
-                messages.append(["role": "user", "content": "Please call save_references now with the references you found (an empty list is fine)."])
-
-            case "refusal":
-                throw PipelineError(message: "Claude declined to search for this recording.")
-            case "max_tokens":
-                throw PipelineError(message: "The search ran too long. Please try again.")
-            default:
-                throw PipelineError(message: "The search finished without saving any references. Please try again.")
-            }
-        }
-        throw PipelineError(message: "The search took too many steps. Please try again.")
-    }
-
-    // MARK: Request
-
-    private func send(_ messages: [[String: Any]]) async throws -> [String: Any] {
-        var request = URLRequest(url: PipelineConfig.anthropicBase.appendingPathComponent("messages"),
-                                 timeoutInterval: PipelineConfig.requestTimeout)
-        request.httpMethod = "POST"
-        let client = AnthropicClient(apiKey: apiKey, workspaceID: workspaceID)
-        client.applyHeaders(to: &request)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        var body: [String: Any] = [
-            "model": model,
-            "max_tokens": PipelineConfig.refinementMaxTokens,
-            "system": Self.system,
-            "messages": messages,
-            "tools": [Self.webSearchTool(for: model), Self.pubMedTool, Self.saveTool],
-            // Each step resends the earlier search results; caching them makes
-            // those repeats much cheaper.
-            "cache_control": ["type": "ephemeral"],
-        ]
-        if AnthropicClient.fallbackModels.contains(model) {
-            request.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
-            body["fallbacks"] = "default"
-        }
-        if AnthropicClient.adaptiveThinkingModels.contains(model) {
-            body["thinking"] = ["type": "adaptive"]
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let data = try await PipelineHTTP.send(request, failure: "Finding references failed")
-        guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw PipelineError(message: "Finding references failed: the reply couldn't be read.")
-        }
-        return response
-    }
-
-    /// Runs one of Pearl Forge's own tools and returns its result block.
-    private func run(_ call: [String: Any], papers: inout [String: PubMedPaper]) async -> [String: Any] {
-        let id = call["id"] as? String ?? ""
-        let input = call["input"] as? [String: Any] ?? [:]
-        guard call["name"] as? String == "pubmed_search", let query = input["query"] as? String, !query.isEmpty else {
-            return ["type": "tool_result", "tool_use_id": id, "is_error": true,
-                    "content": "Unknown tool or missing query."]
-        }
+        let loop = ResearchLoop(apiKey: apiKey, workspaceID: workspaceID, model: model, system: Self.system,
+                                finishTool: Self.saveTool, maxWebSearches: 6, maxSteps: 12,
+                                failure: "Finding references failed",
+                                nudge: "Please call save_references now with the references you found (an empty list is fine).")
         do {
-            let found = try await PubMedClient.search(query, maxResults: input["max_results"] as? Int ?? 6)
-            for paper in found { papers[paper.pmid] = paper }
-            let summary: [[String: Any]] = found.map { paper in
-                ["pmid": paper.pmid, "url": paper.url, "title": paper.title, "journal": paper.journal,
-                 "year": paper.year, "authors": paper.authorLine, "abstract": String(paper.abstract.prefix(1200))]
+            let outcome = try await loop.run(user: Self.userMessage(transcript, gist: gist, categories: categories))
+            return Self.verify(outcome.input["references"] as? [[String: Any]] ?? [],
+                               seenURLs: outcome.seenURLs, papers: outcome.papers)
+        } catch let stop as ResearchLoop.Stop {
+            let message = switch stop {
+            case .refusal: "Claude declined to search for this recording."
+            case .cutOff: "The search ran too long. Please try again."
+            case .unfinished: "The search finished without saving any references. Please try again."
+            case .tooManySteps: "The search took too many steps. Please try again."
             }
-            let json = String(decoding: try JSONSerialization.data(withJSONObject: summary), as: UTF8.self)
-            return ["type": "tool_result", "tool_use_id": id,
-                    "content": found.isEmpty ? "No PubMed results for that query. Try broader or different terms." : json]
-        } catch {
-            return ["type": "tool_result", "tool_use_id": id, "is_error": true, "content": error.localizedDescription]
+            throw PipelineError(message: message)
         }
     }
 
@@ -127,8 +42,7 @@ struct ReferenceFinder {
 
     /// Keeps only references that match a real search result. PubMed papers
     /// get their details from PubMed itself.
-    static func verify(_ input: Any?, seenURLs: [String: String], papers: [String: PubMedPaper]) -> Result {
-        let suggested = (input as? [String: Any])?["references"] as? [[String: Any]] ?? []
+    static func verify(_ suggested: [[String: Any]], seenURLs: [String: String], papers: [String: PubMedPaper]) -> Result {
         var kept: [Reference] = []
         var keptURLs = Set<String>()
         var unverified = 0
@@ -222,28 +136,6 @@ struct ReferenceFinder {
         return message
     }
 
-    /// The basic web search tool. The filtered version (web_search_20260209)
-    /// runs searches inside code, and in live tests some of the results Claude
-    /// read never came back as checkable search results, so every reference
-    /// failed verification. The basic version always returns them.
-    static func webSearchTool(for model: String) -> [String: Any] {
-        ["type": "web_search_20250305", "name": "web_search", "max_uses": 6]
-    }
-
-    static let pubMedTool: [String: Any] = [
-        "name": "pubmed_search",
-        "description": "Search PubMed, the US National Library of Medicine's database of peer-reviewed biomedical and life-sciences research (including psychology, psychiatry, child development, relationships and health). Returns titles, journals, years and abstracts. Call this whenever the thought touches on something researchers study. Use PubMed search terms, not a sentence: a few key terms joined with AND/OR.",
-        "input_schema": [
-            "type": "object",
-            "properties": [
-                "query": ["type": "string",
-                          "description": "PubMed query, for example: (emotional numbing OR desensitization) AND moral development"],
-                "max_results": ["type": "integer", "description": "How many papers to return, 1 to 10. Default 6."],
-            ],
-            "required": ["query"],
-        ],
-    ]
-
     static let saveTool: [String: Any] = [
         "name": "save_references",
         "description": "Save the references you chose for the speaker. Call this exactly once, after searching. Include only items that appeared in your web search or pubmed_search results, with their exact URL.",
@@ -255,23 +147,8 @@ struct ReferenceFinder {
             "properties": [
                 "references": [
                     "type": "array",
-                    "items": [
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": ["title", "url", "source", "kind", "year", "authors", "pmid", "note"],
-                        "properties": [
-                            "title": ["type": "string"],
-                            "url": ["type": "string",
-                                    "description": "The exact URL from the search results. For PubMed papers: https://pubmed.ncbi.nlm.nih.gov/<PMID>/"],
-                            "source": ["type": "string", "description": "The site, publication or journal."],
-                            "kind": ["type": "string", "enum": Reference.Kind.allCases.map(\.rawValue)],
-                            "year": ["type": "string", "description": "Year published, or empty if unknown."],
-                            "authors": ["type": "string", "description": "Authors, or empty if unknown."],
-                            "pmid": ["type": "string", "description": "The PubMed ID for papers from pubmed_search; otherwise empty."],
-                            "note": ["type": "string",
-                                     "description": "One or two sentences on what this source says that relates to the speaker's thought."],
-                        ],
-                    ],
+                    "items": ResearchLoop.sourceSchema(
+                        noteDescription: "One or two sentences on what this source says that relates to the speaker's thought."),
                 ],
             ],
         ],

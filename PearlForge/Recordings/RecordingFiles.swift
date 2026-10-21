@@ -76,6 +76,43 @@ struct Reference: Codable, Identifiable, Equatable, Hashable {
     var found: Date
 }
 
+/// What a lecture was asked for, and what it cost.
+struct LectureInfo: Codable, Equatable {
+    var topic: String
+    /// The length asked for, in minutes.
+    var minutes: Int
+    /// The Claude model that researched and wrote it.
+    var model: String
+    /// The language it was written in, when you chose one.
+    var language: String?
+    /// One sentence on what it covers.
+    var summary: String?
+    /// What Claude charged, worked out from the usage it reported.
+    var claudeCost: Double?
+    /// Claude's estimate before it started (unadjusted), so later estimates
+    /// can learn how far off it runs.
+    var estimatedClaudeCost: Double?
+    var webSearches: Int?
+    /// Characters in the spoken text: the ElevenLabs credits it used.
+    var characters: Int?
+    /// What 1,000 credits were worth on your ElevenLabs plan at the time.
+    var dollarsPerThousandCredits: Double?
+
+    /// What speaking it cost, when your plan's rate is known.
+    var voiceCost: Double? {
+        guard let characters, let rate = dollarsPerThousandCredits else { return nil }
+        return Double(characters) / 1000 * rate
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case topic, minutes, model, language, summary, characters
+        case claudeCost = "claude_cost"
+        case estimatedClaudeCost = "estimated_claude_cost"
+        case webSearches = "web_searches"
+        case dollarsPerThousandCredits = "dollars_per_thousand_credits"
+    }
+}
+
 /// The details saved alongside each recording as meta.json.
 struct RecordingMeta: Codable, Equatable {
     var title: String
@@ -91,12 +128,16 @@ struct RecordingMeta: Codable, Equatable {
     var references: [Reference]
     /// True for text you typed rather than recorded; it has no original audio.
     var typed: Bool?
+    /// Set for a lecture you asked for; its pearl is the lecture itself.
+    var lecture: LectureInfo?
 
     var isTyped: Bool { typed == true }
 
     init(title: String, created: Date, originalFile: String?, favorite: Bool, pearls: [Pearl],
-         categories: [String]? = nil, gist: String? = nil, references: [Reference] = [], typed: Bool? = nil) {
+         categories: [String]? = nil, gist: String? = nil, references: [Reference] = [], typed: Bool? = nil,
+         lecture: LectureInfo? = nil) {
         self.typed = typed
+        self.lecture = lecture
         self.title = title
         self.created = created
         self.originalFile = originalFile
@@ -108,7 +149,7 @@ struct RecordingMeta: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case title, created, favorite, pearls, categories, gist, references, typed
+        case title, created, favorite, pearls, categories, gist, references, typed, lecture
         case originalFile = "original_file"
         // The first version saved one refinement per recording at the top level.
         case mode
@@ -130,6 +171,7 @@ struct RecordingMeta: Codable, Equatable {
         gist = try container.decodeIfPresent(String.self, forKey: .gist)
         references = try container.decodeIfPresent([Reference].self, forKey: .references) ?? []
         typed = try container.decodeIfPresent(Bool.self, forKey: .typed)
+        lecture = try container.decodeIfPresent(LectureInfo.self, forKey: .lecture)
         if let pearls = try container.decodeIfPresent([Pearl].self, forKey: .pearls) {
             self.pearls = pearls
         } else {
@@ -158,6 +200,7 @@ struct RecordingMeta: Codable, Equatable {
         try container.encodeIfPresent(gist, forKey: .gist)
         try container.encode(references, forKey: .references)
         try container.encodeIfPresent(typed, forKey: .typed)
+        try container.encodeIfPresent(lecture, forKey: .lecture)
     }
 }
 

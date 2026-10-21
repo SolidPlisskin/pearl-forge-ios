@@ -12,6 +12,8 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
     case summarize
     /// Typed text spoken exactly as written (or only translated), not polished.
     case asWritten = "aswritten"
+    /// A lecture researched and written for you; never offered as a polish.
+    case lecture
 
     var id: String { rawValue }
 
@@ -24,6 +26,7 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
         case .tighten: return "Tighten"
         case .summarize: return "Summarize"
         case .asWritten: return "As written"
+        case .lecture: return "Lecture"
         }
     }
 
@@ -34,6 +37,7 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
         case .tighten: return "reorganise and de-clutter, keep the nuance"
         case .summarize: return "condensed to the core, still your view"
         case .asWritten: return "your exact words, not polished"
+        case .lecture: return "researched and written for you"
         }
     }
 
@@ -47,7 +51,7 @@ enum RefinementMode: String, CaseIterable, Identifiable, Codable {
         case .clean: return RefinementPrompts.clean
         case .tighten: return RefinementPrompts.tighten
         case .summarize: return RefinementPrompts.summarize
-        case .asWritten: return ""
+        case .asWritten, .lecture: return ""
         }
     }
 }

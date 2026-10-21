@@ -21,6 +21,8 @@ final class SettingsModel {
 
     private(set) var elevenLabsStatus: KeyStatus
     private(set) var voices: [Voice] = []
+    /// Your ElevenLabs plan's credits this month, when the key may read them.
+    private(set) var credits: VoiceCredits?
 
     var selectedVoiceID: String {
         didSet {
@@ -61,6 +63,7 @@ final class SettingsModel {
         KeychainStore.delete(.elevenLabsKey)
         elevenLabsStatus = .notSet
         voices = []
+        credits = nil
     }
 
     /// Loading the voice list doubles as the ElevenLabs key check.
@@ -83,6 +86,16 @@ final class SettingsModel {
         } catch {
             elevenLabsStatus = .failed(error.localizedDescription)
         }
+    }
+
+    /// Reads how many credits your plan has left. Quietly leaves them unknown
+    /// if the key isn't allowed to read your account.
+    func refreshCredits() async {
+        guard let key = KeychainStore.read(.elevenLabsKey) else {
+            credits = nil
+            return
+        }
+        credits = try? await ElevenLabsClient(apiKey: key).credits()
     }
 
     private func refreshSelectedVoiceName() {
