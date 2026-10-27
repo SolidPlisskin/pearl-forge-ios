@@ -17,6 +17,16 @@ struct Pearl: Codable, Identifiable, Equatable {
     var voiceID: String?
     var textFile: String
     var audioFile: String?
+    /// The pearl as a video of your avatar speaking it, made by ElevenLabs or
+    /// added from Photos or Files.
+    var videoFile: String? = nil
+    /// An ElevenLabs video that was started but not yet saved here, so it can
+    /// be collected later if Pearl Forge was closed while it was being made.
+    var videoGenerationID: String? = nil
+    /// What making the video used, when Pearl Forge made it: ElevenLabs
+    /// credits, and how many seconds of speech they covered.
+    var videoCredits: Int? = nil
+    var videoSeconds: Double? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, number, created, mode, notes, polisher
@@ -24,6 +34,10 @@ struct Pearl: Codable, Identifiable, Equatable {
         case voiceID = "voice_id"
         case textFile = "text_file"
         case audioFile = "audio_file"
+        case videoFile = "video_file"
+        case videoGenerationID = "video_generation_id"
+        case videoCredits = "video_credits"
+        case videoSeconds = "video_seconds"
     }
 
     /// "pearl-02-tighten", the start of a pearl's file names.
@@ -243,6 +257,7 @@ struct RecordingEntry: Codable, Identifiable, Equatable {
 ///     ├── pearl-01-clean.mp3         …and that run in your voice
 ///     ├── pearl-02-tighten.txt
 ///     ├── pearl-02-tighten.mp3
+///     ├── pearl-02-tighten.mp4       …and, if you made one, as a video
 ///     └── meta.json
 enum RecordingFiles {
     static let originalTranscriptName = "original_transcript.txt"
@@ -288,12 +303,17 @@ enum RecordingFiles {
     /// A temporary copy of a pearl's audio named after the recording, for
     /// sharing: "I suspect emotional desensitization… – pearl 2.mp3".
     static func shareCopy(of audio: Data, title: String, pearlNumber: Int) throws -> URL {
+        let url = shareURL(title: title, pearlNumber: pearlNumber, fileExtension: "mp3")
+        try audio.write(to: url, options: .atomic)
+        return url
+    }
+
+    /// Where a shareable copy of a pearl's file goes, named after the recording.
+    static func shareURL(title: String, pearlNumber: Int, fileExtension: String) -> URL {
         let unsafe = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.newlines)
         let cleaned = title.components(separatedBy: unsafe).joined(separator: " ")
             .split(separator: " ").joined(separator: " ")
-        let name = "\(cleaned.isEmpty ? "Pearl Forge" : String(cleaned.prefix(60))) – pearl \(pearlNumber).mp3"
-        let url = URL.temporaryDirectory.appending(path: name)
-        try audio.write(to: url, options: .atomic)
-        return url
+        let name = "\(cleaned.isEmpty ? "Pearl Forge" : String(cleaned.prefix(60))) – pearl \(pearlNumber).\(fileExtension)"
+        return URL.temporaryDirectory.appending(path: name)
     }
 }

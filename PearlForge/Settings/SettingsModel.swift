@@ -23,6 +23,8 @@ final class SettingsModel {
     private(set) var voices: [Voice] = []
     /// Your ElevenLabs plan's credits this month, when the key may read them.
     private(set) var credits: VoiceCredits?
+    /// A picture of your ElevenLabs avatar, for making video pearls.
+    private(set) var avatarPicture: Data?
 
     var selectedVoiceID: String {
         didSet {
@@ -41,6 +43,7 @@ final class SettingsModel {
         elevenLabsStatus = KeychainStore.read(.elevenLabsKey) == nil ? .notSet : .saved
         selectedVoiceID = UserDefaults.standard.string(forKey: Self.voiceIDKey) ?? ""
         selectedVoiceName = UserDefaults.standard.string(forKey: Self.voiceNameKey) ?? ""
+        avatarPicture = AvatarVideo.picture
     }
 
     /// Checks the saved key if it hasn't been checked yet this launch.
@@ -96,6 +99,18 @@ final class SettingsModel {
             return
         }
         credits = try? await ElevenLabsClient(apiKey: key).credits()
+    }
+
+    // MARK: Video avatar
+
+    func setAvatarPicture(_ data: Data) throws {
+        try AvatarVideo.savePicture(data)
+        avatarPicture = AvatarVideo.picture
+    }
+
+    func removeAvatarPicture() {
+        AvatarVideo.removePicture()
+        avatarPicture = nil
     }
 
     private func refreshSelectedVoiceName() {

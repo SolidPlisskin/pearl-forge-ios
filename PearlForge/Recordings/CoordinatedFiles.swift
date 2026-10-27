@@ -44,6 +44,23 @@ enum CoordinatedFiles {
         if let error = coordinationError ?? copyError { throw error }
     }
 
+    /// Copies a file (such as a big video) out to somewhere local, waiting
+    /// for iCloud to download it first.
+    static func copyOut(_ source: URL, to destination: URL) throws {
+        try? FileManager.default.startDownloadingUbiquitousItem(at: source)
+        var coordinationError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &coordinationError) { readURL in
+            do {
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.copyItem(at: readURL, to: destination)
+            } catch {
+                copyError = error
+            }
+        }
+        if let error = coordinationError ?? copyError { throw error }
+    }
+
     static func moveItem(at source: URL, to destination: URL) throws {
         let coordinator = NSFileCoordinator()
         var coordinationError: NSError?

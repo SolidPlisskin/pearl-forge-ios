@@ -11,9 +11,15 @@ struct PipelineError: LocalizedError {
 enum PipelineHTTP {
     /// Sends the request and returns the body. HTTP errors become a
     /// PipelineError like "Could not list your voices (401): Invalid API key".
-    static func send(_ request: URLRequest, failure: String) async throws -> Data {
+    /// `explanations` replaces the service's own message for particular
+    /// statuses, such as 402 for a plan that doesn't include a feature.
+    static func send(_ request: URLRequest, failure: String,
+                     explanations: [Int: String] = [:]) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if let explanation = explanations[status] {
+            throw PipelineError(message: explanation)
+        }
         guard status < 400 else {
             throw PipelineError(message: "\(failure) (\(status)): \(readableMessage(from: data))")
         }

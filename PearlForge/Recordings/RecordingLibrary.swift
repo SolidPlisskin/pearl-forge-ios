@@ -18,6 +18,9 @@ final class RecordingLibrary {
     /// The step of a pearl being forged (or re-spoken) right now, per recording.
     private(set) var forging: [String: ForgeStep] = [:]
     private(set) var forgeErrors: [String: String] = [:]
+    /// What's happening with a pearl's video being made right now, per pearl.
+    private(set) var videoWork: [UUID: String] = [:]
+    private(set) var videoErrors: [UUID: String] = [:]
     /// Recordings being sorted into topics right now.
     private(set) var sorting: Set<String> = []
     private(set) var sortErrors: [String: String] = [:]
@@ -212,7 +215,7 @@ final class RecordingLibrary {
     func deletePearl(_ pearlID: UUID, from entryID: String) async throws {
         guard var entry = entry(entryID), let pearl = entry.pearl(pearlID) else { return }
         let folder = root.appending(path: entryID)
-        let files = [pearl.textFile, pearl.audioFile].compactMap { $0 }
+        let files = [pearl.textFile, pearl.audioFile, pearl.videoFile].compactMap { $0 }
         try await offMain {
             for file in files {
                 try? CoordinatedFiles.removeItem(at: folder.appending(path: file))
@@ -287,6 +290,141 @@ final class RecordingLibrary {
             forgeErrors[entryID] = error.localizedDescription
             return nil
         }
+    }
+
+    // MARK: Videos
+
+    /// Copies a video you picked (from Photos or Files) into the recording's
+    /// folder as the pearl's video, replacing any it had.
+    func addVideo(from source: URL, to pearlID: UUID, in entryID: String) async throws {
+        guard let pearl = entry(entryID)?.pearl(pearlID) else { throw Self.missingRecording }
+        let fileExtension = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
+        let file = Pearl.baseName(number: pearl.number, mode: pearl.mode) + "." + fileExtension
+        let folder = root.appending(path: entryID)
+        let oldFile = pearl.videoFile
+        try await offMain {
+            let scoped = source.startAccessingSecurityScopedResource()
+            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+            try CoordinatedFiles.copyItem(at: source, to: folder.appending(path: file))
+            if let oldFile, oldFile != file {
+                try? CoordinatedFiles.removeItem(at: folder.appending(path: oldFile))
+            }
+        }
+        try await updatePearl(pearlID, in: entryID) {
+            $0.videoFile = file
+            $0.videoGenerationID = nil
+            $0.videoCredits = nil
+            $0.videoSeconds = nil
+        }
+    }
+
+    func removeVideo(of pearlID: UUID, in entryID: String) async throws {
+        guard let file = entry(entryID)?.pearl(pearlID)?.videoFile else { return }
+        let url = root.appending(path: entryID).appending(path: file)
+        try await offMain { try? CoordinatedFiles.removeItem(at: url) }
+        try await updatePearl(pearlID, in: entryID) {
+            $0.videoFile = nil
+            $0.videoCredits = nil
+            $0.videoSeconds = nil
+        }
+    }
+
+    /// A temporary copy of a pearl's video named after the recording, for
+    /// playing and sharing. Downloads it from iCloud first if needed.
+    func videoCopy(of pearlID: UUID, in entryID: String) async throws -> URL {
+        guard let entry = entry(entryID), let pearl = entry.pearl(pearlID), let file = pearl.videoFile else {
+            throw Self.missingRecording
+        }
+        let source = root.appending(path: entryID).appending(path: file)
+        let copy = RecordingFiles.shareURL(title: entry.meta.title, pearlNumber: pearl.number,
+                                           fileExtension: (file as NSString).pathExtension)
+        try await offMain { try CoordinatedFiles.copyOut(source, to: copy) }
+        return copy
+    }
+
+    /// Has ElevenLabs make a video of your avatar speaking the pearl's audio,
+    /// and saves it with the pearl. Progress and errors are in `videoWork`
+    /// and `videoErrors`.
+    func makeVideo(of pearlID: UUID, in entryID: String, picture: Data) async {
+        guard videoWork[pearlID] == nil, let audioFile = entry(entryID)?.pearl(pearlID)?.audioFile else { return }
+        await runVideoWork(pearlID, in: entryID) {
+            self.videoWork[pearlID] = "Sending your pearl to ElevenLabs…"
+            let audio = try await self.audioData(audioFile, in: entryID)
+            let client = try Forge.elevenLabs()
+            let before = try? await client.credits()
+            let id = try await client.startLipSyncVideo(picture: picture, audio: audio)
+            try await self.updatePearl(pearlID, in: entryID) {
+                $0.videoGenerationID = id
+                $0.videoSeconds = AvatarVideo.seconds(of: audio)
+                $0.videoCredits = nil
+            }
+            try await self.saveFinishedVideo(id, of: pearlID, in: entryID, client: client, creditsBefore: before)
+        }
+    }
+
+    /// Picks up a video ElevenLabs was still making when Pearl Forge was
+    /// last closed or lost its connection.
+    func collectVideo(of pearlID: UUID, in entryID: String) async {
+        guard videoWork[pearlID] == nil, let id = entry(entryID)?.pearl(pearlID)?.videoGenerationID else { return }
+        await runVideoWork(pearlID, in: entryID) {
+            try await self.saveFinishedVideo(id, of: pearlID, in: entryID, client: try Forge.elevenLabs(),
+                                             creditsBefore: nil)
+        }
+    }
+
+    private func runVideoWork(_ pearlID: UUID, in entryID: String, _ work: () async throws -> Void) async {
+        videoErrors[pearlID] = nil
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Make a video")
+        defer {
+            videoWork[pearlID] = nil
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+        }
+        do {
+            try await work()
+        } catch let failure as VideoFailed {
+            videoErrors[pearlID] = failure.localizedDescription
+            try? await updatePearl(pearlID, in: entryID) { $0.videoGenerationID = nil }
+        } catch {
+            // Anything else leaves a started video on record, for Collect
+            // video to pick up once it's finished.
+            videoErrors[pearlID] = error.localizedDescription
+        }
+    }
+
+    private func saveFinishedVideo(_ id: String, of pearlID: UUID, in entryID: String,
+                                   client: ElevenLabsClient, creditsBefore: VoiceCredits?) async throws {
+        videoWork[pearlID] = "ElevenLabs is making your video. This takes a few minutes…"
+        let video = try await client.waitForVideo(id)
+        videoWork[pearlID] = "Saving the video…"
+        guard let pearl = entry(entryID)?.pearl(pearlID) else { throw Self.missingRecording }
+        let file = Pearl.baseName(number: pearl.number, mode: pearl.mode) + ".mp4"
+        let folder = root.appending(path: entryID)
+        let oldFile = pearl.videoFile
+        try await offMain {
+            try CoordinatedFiles.write(video, to: folder.appending(path: file))
+            if let oldFile, oldFile != file {
+                try? CoordinatedFiles.removeItem(at: folder.appending(path: oldFile))
+            }
+        }
+        // What it cost: the change in credits used, when nothing else (such
+        // as a monthly reset) got in the way of measuring it.
+        var used: Int?
+        if let creditsBefore, let after = try? await client.credits(), after.used > creditsBefore.used {
+            used = after.used - creditsBefore.used
+        }
+        try await updatePearl(pearlID, in: entryID) {
+            $0.videoFile = file
+            $0.videoGenerationID = nil
+            $0.videoCredits = used
+        }
+    }
+
+    private func updatePearl(_ pearlID: UUID, in entryID: String, _ change: (inout Pearl) -> Void) async throws {
+        guard var entry = entry(entryID),
+              let index = entry.meta.pearls.firstIndex(where: { $0.id == pearlID })
+        else { throw Self.missingRecording }
+        change(&entry.meta.pearls[index])
+        try await save(entry)
     }
 
     // MARK: Topics

@@ -46,7 +46,7 @@ enum Forge {
         try await elevenLabs().synthesize(text, voiceID: voiceID)
     }
 
-    private static func elevenLabs() throws -> ElevenLabsClient {
+    static func elevenLabs() throws -> ElevenLabsClient {
         guard let key = KeychainStore.read(.elevenLabsKey) else {
             throw PipelineError(message: "Add your ElevenLabs key in Settings first.")
         }

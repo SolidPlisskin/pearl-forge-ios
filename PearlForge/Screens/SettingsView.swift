@@ -1,23 +1,40 @@
+import PhotosUI
 import SwiftUI
 
-/// The ElevenLabs key (kept in the Keychain), the voice to speak in, and
-/// where recordings are saved.
+/// The ElevenLabs key (kept in the Keychain), the voice to speak in, the
+/// picture of your avatar for video pearls, and where recordings are saved.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
     let library: RecordingLibrary
 
     @State private var choosingFolder = false
     @State private var storageMessage: String?
+    @State private var pickedAvatar: PhotosPickerItem?
+    @State private var avatarError: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 keysSection
                 voiceSection
+                avatarSection
                 storageSection
             }
             .navigationTitle("Settings")
             .task { await model.checkSavedKeys() }
+            .onChange(of: pickedAvatar) { _, item in
+                guard let item else { return }
+                Task {
+                    do {
+                        guard let data = try await item.loadTransferable(type: Data.self) else { return }
+                        try model.setAvatarPicture(data)
+                        avatarError = nil
+                    } catch {
+                        avatarError = error.localizedDescription
+                    }
+                    pickedAvatar = nil
+                }
+            }
             .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
                 guard case .success(let folder) = result else { return }
                 Task {
@@ -36,6 +53,36 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(storageMessage ?? "")
+            }
+        }
+    }
+
+    private var avatarSection: some View {
+        Section {
+            if let data = model.avatarPicture, let image = UIImage(data: data) {
+                HStack(spacing: 14) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    Text("Your avatar")
+                }
+                PhotosPicker("Choose a different picture…", selection: $pickedAvatar, matching: .images)
+                Button("Remove picture", role: .destructive) {
+                    model.removeAvatarPicture()
+                }
+            } else {
+                PhotosPicker("Choose a picture of your avatar…", selection: $pickedAvatar, matching: .images)
+            }
+        } header: {
+            Text("Video avatar")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let avatarError {
+                    Text(avatarError).foregroundStyle(.red)
+                }
+                Text("For Make video on a pearl: ElevenLabs animates this picture so it speaks the pearl in your voice. Use a clear, front-facing still of your ElevenLabs avatar: open it in ElevenLabs Avatars, then save its picture to Photos (or take a screenshot and crop it). Making videos from the app needs ElevenLabs Pro or higher; on any paid plan you can make them in ElevenLabs and use Add video instead.")
             }
         }
     }
