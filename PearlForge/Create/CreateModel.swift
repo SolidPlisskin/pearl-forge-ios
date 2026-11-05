@@ -159,6 +159,31 @@ final class CreateModel {
         }
     }
 
+    /// A voice note that hasn't been refined yet (or one still being
+    /// recorded), which bringing in another recording would replace.
+    var hasUnrefinedRecording: Bool {
+        !hasResult && (source != nil || recorder.isRecording)
+    }
+
+    /// Uses audio another app shared with Pearl Forge (Share › Pearl Forge,
+    /// for example a Plaud recording).
+    func importSharedRecording(from url: URL) {
+        if recorder.isRecording { _ = recorder.stop() }
+        input = .record
+        importRecording(from: url)
+        Self.removeInboxCopy(of: url)
+    }
+
+    /// Files shared from another app can arrive as a copy in Documents/Inbox,
+    /// which the Files app shows. Importing makes its own copy, so the Inbox
+    /// one goes.
+    static func removeInboxCopy(of url: URL) {
+        let inbox = URL.documentsDirectory.appending(path: "Inbox").resolvingSymlinksInPath().path + "/"
+        if url.resolvingSymlinksInPath().path.hasPrefix(inbox) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     /// Clears the screen for a new voice note. Anything already refined is
     /// saved in History, so nothing is lost.
     func startNew() {

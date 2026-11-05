@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The app's tabs.
 enum AppTab: Hashable {
@@ -12,10 +13,12 @@ struct RootView: View {
     @State private var polishers = PolishersModel()
     @State private var library = RecordingLibrary()
     @State private var tab = AppTab.create
+    @State private var sharedAudio: URL?
 
     var body: some View {
         TabView(selection: $tab) {
-            CreateView(settings: settings, polishers: polishers, library: library, openTab: { tab = $0 })
+            CreateView(settings: settings, polishers: polishers, library: library,
+                       sharedAudio: $sharedAudio, openTab: { tab = $0 })
                 .tabItem { Label("Create", systemImage: "mic") }
                 .tag(AppTab.create)
             HistoryView(library: library, settings: settings, polishers: polishers, openTab: { tab = $0 })
@@ -30,6 +33,13 @@ struct RootView: View {
             SettingsView(model: settings, library: library)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
+        }
+        .onOpenURL { url in
+            // A recording sent from another app with Share › Pearl Forge.
+            guard url.isFileURL, UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
+            else { return }
+            sharedAudio = url
+            tab = .create
         }
     }
 }

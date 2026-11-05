@@ -9,11 +9,14 @@ struct CreateView: View {
     let settings: SettingsModel
     let polishers: PolishersModel
     let library: RecordingLibrary
+    /// Audio another app shared with Pearl Forge, waiting to be brought in.
+    @Binding var sharedAudio: URL?
     let openTab: (AppTab) -> Void
 
     @State private var model = CreateModel()
     @State private var importing = false
     @State private var confirmingDiscard = false
+    @State private var confirmingReplace = false
     @State private var opened: WebPage?
     @FocusState private var editingRefined: Bool
     @FocusState private var editingTyped: Bool
@@ -118,7 +121,40 @@ struct CreateView: View {
             } message: {
                 Text("It hasn't been refined or saved yet.")
             }
+            .confirmationDialog("Replace your voice note?", isPresented: $confirmingReplace,
+                                titleVisibility: .visible) {
+                Button("Use the shared recording", role: .destructive) {
+                    useSharedAudio()
+                }
+                Button("Keep mine", role: .cancel) {
+                    if let url = sharedAudio { CreateModel.removeInboxCopy(of: url) }
+                    sharedAudio = nil
+                }
+            } message: {
+                Text("The one on this screen hasn't been refined or saved yet.")
+            }
+            .onChange(of: sharedAudio, initial: true) { takeSharedAudio() }
+            .onChange(of: model.isBusy) { takeSharedAudio() }
         }
+    }
+
+    // MARK: Shared audio
+
+    /// Audio shared from another app waits until nothing is being refined,
+    /// and asks before replacing a voice note that hasn't been refined yet.
+    private func takeSharedAudio() {
+        guard sharedAudio != nil, !model.isBusy, !confirmingReplace else { return }
+        if model.hasUnrefinedRecording {
+            confirmingReplace = true
+        } else {
+            useSharedAudio()
+        }
+    }
+
+    private func useSharedAudio() {
+        guard let url = sharedAudio else { return }
+        sharedAudio = nil
+        model.importSharedRecording(from: url)
     }
 
     // MARK: Sections
@@ -723,5 +759,6 @@ struct PlayerRow: View {
 }
 
 #Preview {
-    CreateView(settings: SettingsModel(), polishers: PolishersModel(), library: RecordingLibrary(), openTab: { _ in })
+    CreateView(settings: SettingsModel(), polishers: PolishersModel(), library: RecordingLibrary(),
+               sharedAudio: .constant(nil), openTab: { _ in })
 }
