@@ -61,7 +61,8 @@ struct FalClient {
         let ext = audioExtension.lowercased()
         let audioURL = try await upload(audio, contentType: Self.audioContentType(ext), fileName: "pearl.\(ext)")
 
-        var body: [String: Any] = ["image_url": imageURL, "audio_url": audioURL]
+        var body: [String: Any] = ["image_url": imageURL, "audio_url": audioURL,
+                                   "prompt": AvatarVideo.directions]
         body.merge(model.falInput) { _, extra in extra }
         var request = URLRequest(url: Self.queueBase.appending(path: endpoint),
                                  timeoutInterval: PipelineConfig.requestTimeout)

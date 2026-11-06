@@ -11,6 +11,10 @@ enum AvatarVideo {
     /// ElevenLabs asks apps to check on a video no more than every 10 seconds.
     static let pollInterval: Duration = .seconds(10)
     static let chosenModelKey = "videoModel"
+    /// Sent with every fal.ai video. Left to themselves the models invent
+    /// gestures, such as a floating hand waving in from the bottom of a
+    /// picture cut off at the chest.
+    static let directions = "A person speaking directly to the camera with a calm, natural expression and subtle head movement. Hands and arms stay still and out of view. Steady framing, no camera movement."
 
     static let needsProMessage = "Making videos from the app needs ElevenLabs Pro or higher. On your plan, make the video in ElevenLabs Avatars instead, then use Add video."
 
