@@ -10,9 +10,10 @@ enum KeyStatus: Equatable {
     case failed(String)
 }
 
-/// State behind the Settings screen: the ElevenLabs key, the account's voices,
-/// and the chosen voice. The key lives in the Keychain; the voice choice isn't
-/// secret, so it lives in UserDefaults. AI polishing keys are in PolishersModel.
+/// State behind the Settings screen: the ElevenLabs and fal.ai keys, the
+/// account's voices, the chosen voice, and what makes videos. Keys live in the
+/// Keychain; the choices aren't secret, so they live in UserDefaults. AI
+/// polishing keys are in PolishersModel.
 @MainActor
 @Observable
 final class SettingsModel {
@@ -25,6 +26,16 @@ final class SettingsModel {
     private(set) var credits: VoiceCredits?
     /// A picture of your ElevenLabs avatar, for making video pearls.
     private(set) var avatarPicture: Data?
+    private(set) var falStatus: KeyStatus
+    /// Your fal.ai balance in dollars, when the key may read it.
+    private(set) var falBalance: Double?
+
+    /// What makes videos of your avatar.
+    var videoModelID: String {
+        didSet { UserDefaults.standard.set(videoModelID, forKey: AvatarVideo.chosenModelKey) }
+    }
+
+    var videoModel: VideoModel { VideoModel.withID(videoModelID) }
 
     var selectedVoiceID: String {
         didSet {
@@ -44,12 +55,17 @@ final class SettingsModel {
         selectedVoiceID = UserDefaults.standard.string(forKey: Self.voiceIDKey) ?? ""
         selectedVoiceName = UserDefaults.standard.string(forKey: Self.voiceNameKey) ?? ""
         avatarPicture = AvatarVideo.picture
+        falStatus = KeychainStore.read(.falKey) == nil ? .notSet : .saved
+        videoModelID = VideoModel.withID(UserDefaults.standard.string(forKey: AvatarVideo.chosenModelKey)).id
     }
 
-    /// Checks the saved key if it hasn't been checked yet this launch.
+    /// Checks the saved keys if they haven't been checked yet this launch.
     func checkSavedKeys() async {
         if elevenLabsStatus == .saved {
             await loadVoices()
+        }
+        if falStatus == .saved {
+            await checkFalKey()
         }
     }
 
@@ -99,6 +115,46 @@ final class SettingsModel {
             return
         }
         credits = try? await ElevenLabsClient(apiKey: key).credits()
+    }
+
+    // MARK: fal.ai
+
+    func saveFalKey(_ key: String) throws {
+        try KeychainStore.save(key, for: .falKey)
+        falStatus = .saved
+        falBalance = nil
+        Task { await checkFalKey() }
+    }
+
+    func removeFalKey() {
+        KeychainStore.delete(.falKey)
+        falStatus = .notSet
+        falBalance = nil
+    }
+
+    /// Reading the balance doubles as the fal.ai key check.
+    func checkFalKey() async {
+        guard let key = KeychainStore.read(.falKey) else {
+            falStatus = .notSet
+            return
+        }
+        falStatus = .checking
+        do {
+            falBalance = try await FalClient(apiKey: key).balance()
+            falStatus = .works
+        } catch {
+            falStatus = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Reads your fal.ai balance again. Quietly leaves it unknown if the key
+    /// isn't allowed to read billing.
+    func refreshFalBalance() async {
+        guard let key = KeychainStore.read(.falKey) else {
+            falBalance = nil
+            return
+        }
+        falBalance = (try? await FalClient(apiKey: key).balance()) ?? nil
     }
 
     // MARK: Video avatar

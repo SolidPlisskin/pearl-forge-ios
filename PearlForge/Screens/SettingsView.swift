@@ -1,8 +1,9 @@
 import PhotosUI
 import SwiftUI
 
-/// The ElevenLabs key (kept in the Keychain), the voice to speak in, the
-/// picture of your avatar for video pearls, and where recordings are saved.
+/// The ElevenLabs and fal.ai keys (kept in the Keychain), the voice to speak
+/// in, the picture of your avatar and what makes video pearls, and where
+/// recordings are saved.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
     let library: RecordingLibrary
@@ -75,6 +76,7 @@ struct SettingsView: View {
             } else {
                 PhotosPicker("Choose a picture of your avatar…", selection: $pickedAvatar, matching: .images)
             }
+            videoModelPicker
         } header: {
             Text("Video avatar")
         } footer: {
@@ -82,9 +84,30 @@ struct SettingsView: View {
                 if let avatarError {
                     Text(avatarError).foregroundStyle(.red)
                 }
-                Text("For Make video on a pearl: ElevenLabs animates this picture so it speaks the pearl in your voice. Use a clear, front-facing still of your ElevenLabs avatar: open it in ElevenLabs Avatars, then save its picture to Photos (or take a screenshot and crop it). Making videos from the app needs ElevenLabs Pro or higher; on any paid plan you can make them in ElevenLabs and use Add video instead.")
+                Text(videoFooter)
             }
         }
+    }
+
+    private var videoModelPicker: some View {
+        NavigationLink {
+            VideoModelList(selection: $model.videoModelID)
+        } label: {
+            LabeledContent("Make videos with", value: model.videoModel.name)
+        }
+    }
+
+    private var videoFooter: String {
+        let picture = "For Make video on a pearl: this picture is animated to speak the pearl in your voice. Use a clear, front-facing still of your ElevenLabs avatar: open it in ElevenLabs Avatars, then save its picture to Photos (or take a screenshot and crop it)."
+        let video = model.videoModel
+        guard video.isFal else {
+            return picture + " Making videos with ElevenLabs needs its Pro plan or higher; on any paid plan you can make them in ElevenLabs and use Add video instead."
+        }
+        var line = picture + " \(video.name) on fal.ai makes them, paid from your fal.ai balance."
+        if model.falStatus == .notSet {
+            line += " Add your fal.ai key above first."
+        }
+        return line + " Pearl Forge asks fal.ai to delete the uploaded picture and audio after a day, and the finished video after a week; your copy stays with the pearl."
     }
 
     private var storageSection: some View {
@@ -136,16 +159,42 @@ struct SettingsView: View {
                     Task { await model.loadVoices() }
                 }
             }
+            NavigationLink {
+                KeyEditorView(target: .init(
+                    title: "fal.ai key",
+                    keysPageLabel: "Get your key at fal.ai (the API preset is enough)",
+                    keysPage: URL(string: "https://fal.ai/dashboard/keys")!,
+                    isSaved: model.falStatus != .notSet,
+                    save: { key, _ in if let key { try model.saveFalKey(key) } },
+                    remove: model.removeFalKey))
+            } label: {
+                KeyStatusRow(title: "fal.ai", subtitle: falSubtitle, status: model.falStatus)
+            }
+            if case .failed = model.falStatus {
+                Button("Check fal.ai again") {
+                    Task { await model.checkFalKey() }
+                }
+            }
         } header: {
-            Text("API key")
+            Text("API keys")
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if case .failed(let message) = model.elevenLabsStatus {
                     Text(message).foregroundStyle(.red)
                 }
+                if case .failed(let message) = model.falStatus {
+                    Text(message).foregroundStyle(.red)
+                }
                 Text("Kept in this iPhone's Keychain: never in the app's code, and never copied off this phone. Keys for the AI that polishes your thoughts are in the AI tab.")
             }
         }
+    }
+
+    private var falSubtitle: String {
+        if let balance = model.falBalance {
+            return "Videos of your avatar · \(balance.dollars) left"
+        }
+        return "Videos of your avatar"
     }
 
     private var voiceSection: some View {
@@ -194,6 +243,52 @@ struct SettingsView: View {
             }
         }
         .pickerStyle(.navigationLink)
+    }
+}
+
+/// The models that can make videos, with what each costs.
+private struct VideoModelList: View {
+    @Binding var selection: String
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(VideoModel.fal) { row($0) }
+            } header: {
+                Text("fal.ai: pay per video")
+            } footer: {
+                Text("fal.ai's prices for each minute of speech; a video is as long as its pearl. Try a short pearl first to see which you like.")
+            }
+            Section {
+                row(VideoModel.elevenLabs)
+            } header: {
+                Text("ElevenLabs")
+            }
+        }
+        .navigationTitle("Make videos with")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func row(_ video: VideoModel) -> some View {
+        Button {
+            selection = video.id
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(video.name)
+                        .foregroundStyle(Color.primary)
+                    Text("\(video.priceLine). \(video.strength).")
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
+                }
+                Spacer()
+                if selection == video.id {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Chosen")
+                }
+            }
+        }
     }
 }
 

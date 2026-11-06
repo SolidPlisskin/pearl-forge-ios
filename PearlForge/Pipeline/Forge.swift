@@ -52,4 +52,11 @@ enum Forge {
         }
         return ElevenLabsClient(apiKey: key)
     }
+
+    static func fal() throws -> FalClient {
+        guard let key = KeychainStore.read(.falKey) else {
+            throw PipelineError(message: "Add your fal.ai key in Settings first.")
+        }
+        return FalClient(apiKey: key)
+    }
 }

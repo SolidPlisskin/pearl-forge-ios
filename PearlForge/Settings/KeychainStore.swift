@@ -10,6 +10,7 @@ enum Credential: String, CaseIterable {
     case openAIKey = "openai-api-key"
     case geminiKey = "gemini-api-key"
     case openRouterKey = "openrouter-api-key"
+    case falKey = "fal-api-key"
 }
 
 /// Reads and writes credentials in this iPhone's Keychain. Items stay on this

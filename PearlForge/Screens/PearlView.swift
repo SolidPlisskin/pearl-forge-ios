@@ -18,6 +18,8 @@ struct PearlView: View {
     @State private var confirmingDelete = false
     @State private var actionError: String?
     @State private var videoQuote: String?
+    /// The model the quote was worked out for.
+    @State private var quotedModel: VideoModel?
     @State private var pickedVideo: PhotosPickerItem?
     @State private var importingVideo = false
     @State private var playingVideo: VideoLink?
@@ -128,7 +130,11 @@ struct PearlView: View {
             }
         }
         .task {
-            if settings.credits == nil { await settings.refreshCredits() }
+            if settings.videoModel.isFal {
+                if settings.falStatus == .saved { await settings.checkFalKey() }
+            } else if settings.credits == nil {
+                await settings.refreshCredits()
+            }
         }
         .onChange(of: pickedVideo) { _, item in
             guard let item else { return }
@@ -160,8 +166,8 @@ struct PearlView: View {
                             isPresented: Binding(get: { videoQuote != nil }, set: { if !$0 { videoQuote = nil } }),
                             titleVisibility: .visible) {
             Button("Make video") {
-                guard let picture = settings.avatarPicture else { return }
-                Task { await library.makeVideo(of: pearlID, in: entryID, picture: picture) }
+                guard let picture = settings.avatarPicture, let model = quotedModel else { return }
+                Task { await library.makeVideo(of: pearlID, in: entryID, picture: picture, with: model) }
             }
         } message: {
             Text(videoQuote ?? "")
@@ -197,7 +203,9 @@ struct PearlView: View {
 
     private func videoSection(_ entry: RecordingEntry, _ pearl: Pearl, isBusy: Bool) -> some View {
         let working = library.videoWork[pearlID]
-        let planAllows = AvatarVideo.planAllowsApp(tier: settings.credits?.tier)
+        let model = settings.videoModel
+        let planAllows = model.isFal ? settings.falStatus != .notSet
+                                     : AvatarVideo.planAllowsApp(tier: settings.credits?.tier) != false
         return Section {
             if let working {
                 HStack(spacing: 12) {
@@ -221,7 +229,8 @@ struct PearlView: View {
                     Button {
                         Task { await library.collectVideo(of: pearlID, in: entryID) }
                     } label: {
-                        Label("Collect your video from ElevenLabs", systemImage: "arrow.down.circle")
+                        Label("Collect your video from \(pearl.videoModel == nil ? "ElevenLabs" : "fal.ai")",
+                              systemImage: "arrow.down.circle")
                     }
                 } else if pearl.audioFile != nil {
                     Button {
@@ -230,7 +239,7 @@ struct PearlView: View {
                         Label(pearl.videoFile == nil ? "Make video" : "Make a new video",
                               systemImage: "person.crop.rectangle")
                     }
-                    .disabled(isBusy || settings.avatarPicture == nil || planAllows == false)
+                    .disabled(isBusy || settings.avatarPicture == nil || !planAllows)
                 }
                 PhotosPicker(selection: $pickedVideo, matching: .videos) {
                     Label(pearl.videoFile == nil ? "Add video from Photos" : "Replace with a video from Photos",
@@ -264,14 +273,20 @@ struct PearlView: View {
                 if working == nil && pearl.videoFile == nil {
                     if settings.avatarPicture == nil {
                         Text("To make videos here, choose a picture of your avatar in Settings › Video avatar. Or make the video in ElevenLabs Avatars (Share audio sends it this pearl's speech), save it, and add it here.")
-                    } else if planAllows == false {
-                        Text(AvatarVideo.needsProMessage + " Share audio sends it this pearl's speech.")
+                    } else if !planAllows && model.isFal {
+                        Text("To make videos with \(model.name), add your fal.ai key in Settings › API keys.")
+                    } else if !planAllows {
+                        Text(AvatarVideo.needsProMessage + " Or choose a fal.ai model in Settings › Video avatar. Share audio sends ElevenLabs this pearl's speech.")
                     } else {
-                        Text("Make video sends your avatar picture and this pearl's audio to ElevenLabs, which makes a video of your avatar speaking it. You'll see what it should cost first.")
+                        Text("Make video sends your avatar picture and this pearl's audio to \(model.isFal ? "fal.ai (\(model.name))" : "ElevenLabs"), which makes a video of your avatar speaking it. You'll see what it should cost first. To use a different model, go to Settings › Video avatar.")
                     }
                 }
-                if let credits = pearl.videoCredits {
-                    Text("Making this video used \(credits.formatted()) ElevenLabs credits.")
+                if pearl.videoGenerationID == nil {
+                    if let credits = pearl.videoCredits {
+                        Text("Making this video used \(credits.formatted()) ElevenLabs credits.")
+                    } else if let endpoint = pearl.videoModel, let cost = pearl.videoCost {
+                        Text("Made by \(VideoModel.name(ofEndpoint: endpoint)) on fal.ai for about \(cost.dollars).")
+                    }
                 }
             }
         }
@@ -288,6 +303,12 @@ struct PearlView: View {
             return
         }
         let length = Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond))
+        let model = settings.videoModel
+        if model.isFal {
+            await settings.refreshFalBalance()
+            quoteFalVideo(model, seconds: seconds, length: length)
+            return
+        }
         var lines: [String] = []
         if let rate = AvatarVideo.creditsPerSecond(from: library.entries.flatMap(\.meta.pearls)) {
             let credits = Int((rate * seconds).rounded())
@@ -303,6 +324,25 @@ struct PearlView: View {
             lines.append("You have \(credits.remaining.formatted()) credits left this month.")
         }
         lines.append("It takes a few minutes. Keep Pearl Forge open; if you leave, come back to this pearl to collect the video.")
+        quotedModel = model
+        videoQuote = lines.joined(separator: "\n\n")
+    }
+
+    private func quoteFalVideo(_ model: VideoModel, seconds: Double, length: String) {
+        if let longest = model.maxSeconds, seconds > longest {
+            let limit = Duration.seconds(longest).formatted(.time(pattern: .minuteSecond))
+            videoActionError = "\(model.name) takes pearls up to \(limit), and this one runs \(length). Choose another model in Settings › Video avatar."
+            return
+        }
+        var lines: [String] = []
+        if let cost = model.cost(seconds: seconds), let rate = model.dollarsPerSecond {
+            lines.append("This pearl runs \(length). With \(model.name) it should cost about \(cost.dollars) (fal.ai charges \(rate.formatted(.currency(code: "USD").precision(.fractionLength(2...4)))) a second).")
+        }
+        if let balance = settings.falBalance {
+            lines.append("Your fal.ai balance is \(balance.dollars).")
+        }
+        lines.append("It takes a few minutes. Keep Pearl Forge open; if you leave, come back to this pearl to collect the video.")
+        quotedModel = model
         videoQuote = lines.joined(separator: "\n\n")
     }
 

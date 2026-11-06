@@ -313,7 +313,9 @@ final class RecordingLibrary {
         try await updatePearl(pearlID, in: entryID) {
             $0.videoFile = file
             $0.videoGenerationID = nil
+            $0.videoModel = nil
             $0.videoCredits = nil
+            $0.videoCost = nil
             $0.videoSeconds = nil
         }
     }
@@ -324,7 +326,9 @@ final class RecordingLibrary {
         try await offMain { try? CoordinatedFiles.removeItem(at: url) }
         try await updatePearl(pearlID, in: entryID) {
             $0.videoFile = nil
+            $0.videoModel = nil
             $0.videoCredits = nil
+            $0.videoCost = nil
             $0.videoSeconds = nil
         }
     }
@@ -342,33 +346,71 @@ final class RecordingLibrary {
         return copy
     }
 
-    /// Has ElevenLabs make a video of your avatar speaking the pearl's audio,
-    /// and saves it with the pearl. Progress and errors are in `videoWork`
-    /// and `videoErrors`.
-    func makeVideo(of pearlID: UUID, in entryID: String, picture: Data) async {
+    /// Has ElevenLabs or a fal.ai model make a video of your avatar speaking
+    /// the pearl's audio, and saves it with the pearl. Progress and errors are
+    /// in `videoWork` and `videoErrors`.
+    func makeVideo(of pearlID: UUID, in entryID: String, picture: Data, with model: VideoModel) async {
         guard videoWork[pearlID] == nil, let audioFile = entry(entryID)?.pearl(pearlID)?.audioFile else { return }
         await runVideoWork(pearlID, in: entryID) {
-            self.videoWork[pearlID] = "Sending your pearl to ElevenLabs…"
+            let maker = model.isFal ? "fal.ai" : "ElevenLabs"
+            self.videoWork[pearlID] = "Sending your pearl to \(maker)…"
             let audio = try await self.audioData(audioFile, in: entryID)
-            let client = try Forge.elevenLabs()
-            let before = try? await client.credits()
-            let id = try await client.startLipSyncVideo(picture: picture, audio: audio)
-            try await self.updatePearl(pearlID, in: entryID) {
-                $0.videoGenerationID = id
-                $0.videoSeconds = AvatarVideo.seconds(of: audio)
-                $0.videoCredits = nil
+            let seconds = AvatarVideo.seconds(of: audio)
+            if let endpoint = model.falEndpoint {
+                let client = try Forge.fal()
+                let id = try await client.startVideo(model, picture: picture, audio: audio,
+                                                     audioExtension: (audioFile as NSString).pathExtension)
+                try await self.updatePearl(pearlID, in: entryID) {
+                    $0.videoGenerationID = id
+                    $0.videoModel = endpoint
+                    $0.videoSeconds = seconds
+                    $0.videoCost = seconds.flatMap { model.cost(seconds: $0) }
+                    $0.videoCredits = nil
+                }
+                try await self.saveFinishedVideo(of: pearlID, in: entryID, maker: maker) {
+                    try await client.waitForVideo(id, endpoint: endpoint)
+                }
+            } else {
+                let client = try Forge.elevenLabs()
+                let before = try? await client.credits()
+                let id = try await client.startLipSyncVideo(picture: picture, audio: audio)
+                try await self.updatePearl(pearlID, in: entryID) {
+                    $0.videoGenerationID = id
+                    $0.videoModel = nil
+                    $0.videoSeconds = seconds
+                    $0.videoCost = nil
+                    $0.videoCredits = nil
+                }
+                try await self.saveFinishedVideo(of: pearlID, in: entryID, maker: maker) {
+                    try await client.waitForVideo(id)
+                }
+                // What it cost: the change in credits used, when nothing else
+                // (such as a monthly reset) got in the way of measuring it.
+                if let before, let after = try? await client.credits(), after.used > before.used {
+                    try await self.updatePearl(pearlID, in: entryID) { $0.videoCredits = after.used - before.used }
+                }
             }
-            try await self.saveFinishedVideo(id, of: pearlID, in: entryID, client: client, creditsBefore: before)
         }
     }
 
-    /// Picks up a video ElevenLabs was still making when Pearl Forge was
-    /// last closed or lost its connection.
+    /// Picks up a video ElevenLabs or fal.ai was still making when Pearl
+    /// Forge was last closed or lost its connection.
     func collectVideo(of pearlID: UUID, in entryID: String) async {
-        guard videoWork[pearlID] == nil, let id = entry(entryID)?.pearl(pearlID)?.videoGenerationID else { return }
+        guard videoWork[pearlID] == nil, let pearl = entry(entryID)?.pearl(pearlID),
+              let id = pearl.videoGenerationID
+        else { return }
         await runVideoWork(pearlID, in: entryID) {
-            try await self.saveFinishedVideo(id, of: pearlID, in: entryID, client: try Forge.elevenLabs(),
-                                             creditsBefore: nil)
+            if let endpoint = pearl.videoModel {
+                let client = try Forge.fal()
+                try await self.saveFinishedVideo(of: pearlID, in: entryID, maker: "fal.ai") {
+                    try await client.waitForVideo(id, endpoint: endpoint)
+                }
+            } else {
+                let client = try Forge.elevenLabs()
+                try await self.saveFinishedVideo(of: pearlID, in: entryID, maker: "ElevenLabs") {
+                    try await client.waitForVideo(id)
+                }
+            }
         }
     }
 
@@ -383,7 +425,10 @@ final class RecordingLibrary {
             try await work()
         } catch let failure as VideoFailed {
             videoErrors[pearlID] = failure.localizedDescription
-            try? await updatePearl(pearlID, in: entryID) { $0.videoGenerationID = nil }
+            try? await updatePearl(pearlID, in: entryID) {
+                $0.videoGenerationID = nil
+                $0.videoCost = nil
+            }
         } catch {
             // Anything else leaves a started video on record, for Collect
             // video to pick up once it's finished.
@@ -391,10 +436,11 @@ final class RecordingLibrary {
         }
     }
 
-    private func saveFinishedVideo(_ id: String, of pearlID: UUID, in entryID: String,
-                                   client: ElevenLabsClient, creditsBefore: VoiceCredits?) async throws {
-        videoWork[pearlID] = "ElevenLabs is making your video. This takes a few minutes…"
-        let video = try await client.waitForVideo(id)
+    /// Waits for the video being made, then saves it as the pearl's video.
+    private func saveFinishedVideo(of pearlID: UUID, in entryID: String, maker: String,
+                                   download: () async throws -> Data) async throws {
+        videoWork[pearlID] = "\(maker) is making your video. This takes a few minutes…"
+        let video = try await download()
         videoWork[pearlID] = "Saving the video…"
         guard let pearl = entry(entryID)?.pearl(pearlID) else { throw Self.missingRecording }
         let file = Pearl.baseName(number: pearl.number, mode: pearl.mode) + ".mp4"
@@ -406,16 +452,9 @@ final class RecordingLibrary {
                 try? CoordinatedFiles.removeItem(at: folder.appending(path: oldFile))
             }
         }
-        // What it cost: the change in credits used, when nothing else (such
-        // as a monthly reset) got in the way of measuring it.
-        var used: Int?
-        if let creditsBefore, let after = try? await client.credits(), after.used > creditsBefore.used {
-            used = after.used - creditsBefore.used
-        }
         try await updatePearl(pearlID, in: entryID) {
             $0.videoFile = file
             $0.videoGenerationID = nil
-            $0.videoCredits = used
         }
     }
 

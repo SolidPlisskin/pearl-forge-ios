@@ -18,14 +18,18 @@ struct Pearl: Codable, Identifiable, Equatable {
     var textFile: String
     var audioFile: String?
     /// The pearl as a video of your avatar speaking it, made by ElevenLabs or
-    /// added from Photos or Files.
+    /// fal.ai, or added from Photos or Files.
     var videoFile: String? = nil
-    /// An ElevenLabs video that was started but not yet saved here, so it can
-    /// be collected later if Pearl Forge was closed while it was being made.
+    /// A video that was started but not yet saved here, so it can be
+    /// collected later if Pearl Forge was closed while it was being made.
     var videoGenerationID: String? = nil
+    /// The fal.ai model making or that made the video; nil for ElevenLabs.
+    var videoModel: String? = nil
     /// What making the video used, when Pearl Forge made it: ElevenLabs
-    /// credits, and how many seconds of speech they covered.
+    /// credits or fal.ai's price in dollars, and how many seconds of speech
+    /// they covered.
     var videoCredits: Int? = nil
+    var videoCost: Double? = nil
     var videoSeconds: Double? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -36,7 +40,9 @@ struct Pearl: Codable, Identifiable, Equatable {
         case audioFile = "audio_file"
         case videoFile = "video_file"
         case videoGenerationID = "video_generation_id"
+        case videoModel = "video_model"
         case videoCredits = "video_credits"
+        case videoCost = "video_cost"
         case videoSeconds = "video_seconds"
     }
 

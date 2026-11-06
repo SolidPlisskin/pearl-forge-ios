@@ -7,7 +7,7 @@ struct PipelineError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-/// Shared request plumbing for the ElevenLabs and Anthropic clients.
+/// Shared request plumbing for the cloud clients.
 enum PipelineHTTP {
     /// Sends the request and returns the body. HTTP errors become a
     /// PipelineError like "Could not list your voices (401): Invalid API key".
@@ -28,7 +28,7 @@ enum PipelineHTTP {
 
     /// Pulls the human-readable message out of an API error body, falling back
     /// to the start of the raw body.
-    private static func readableMessage(from data: Data) -> String {
+    static func readableMessage(from data: Data) -> String {
         var parsed = try? JSONSerialization.jsonObject(with: data)
         // Gemini sometimes wraps its error in a one-item list.
         if let list = parsed as? [Any], let first = list.first {
@@ -45,6 +45,11 @@ enum PipelineHTTP {
             }
             if let detail = json["detail"] as? String {
                 return detail
+            }
+            // fal.ai: {"detail": [{"msg": "...", ...}]} when an input is rejected.
+            if let details = json["detail"] as? [[String: Any]] {
+                let messages = details.compactMap { $0["msg"] as? String }
+                if !messages.isEmpty { return messages.joined(separator: " ") }
             }
         }
         return String(decoding: data.prefix(500), as: UTF8.self)

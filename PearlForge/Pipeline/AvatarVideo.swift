@@ -3,13 +3,14 @@ import Foundation
 import UIKit
 
 /// Video pearls: a picture of your ElevenLabs avatar, lip-synced to a pearl's
-/// audio by ElevenLabs' Creatify Aurora model. ElevenLabs' own Avatars page
+/// audio by one of the models in VideoModel. ElevenLabs' own Avatars page
 /// has no API yet, so the app works from a picture of the avatar instead.
 enum AvatarVideo {
     static let model = "creatify-aurora"
     static let resolution = "720p"
     /// ElevenLabs asks apps to check on a video no more than every 10 seconds.
     static let pollInterval: Duration = .seconds(10)
+    static let chosenModelKey = "videoModel"
 
     static let needsProMessage = "Making videos from the app needs ElevenLabs Pro or higher. On your plan, make the video in ElevenLabs Avatars instead, then use Add video."
 
@@ -78,15 +79,88 @@ enum AvatarVideo {
     }
 }
 
-/// ElevenLabs gave up on a video. Unlike a lost connection, there's nothing
-/// left to collect.
+/// What animates the avatar picture: ElevenLabs (Pro plans and up), or one
+/// of the avatar models on fal.ai, paid per second of video with no
+/// subscription.
+struct VideoModel: Identifiable, Hashable {
+    /// Saved as the choice in Settings.
+    let id: String
+    let name: String
+    /// What it's good for, under its name in the picker.
+    let strength: String
+    /// fal.ai's model, or nil for ElevenLabs.
+    let falEndpoint: String?
+    /// Extra settings sent with the picture and audio.
+    var falInput: [String: String] = [:]
+    /// fal.ai's list price per second of video, as of November 2026.
+    var dollarsPerSecond: Double?
+    /// Creatify bills whole seconds: a 9.4-second video costs as much as 10.
+    var billsWholeSeconds = false
+    /// The longest pearl the model can take, in seconds.
+    var maxSeconds: Double?
+
+    var isFal: Bool { falEndpoint != nil }
+
+    /// What a video of this many seconds of speech should cost, in dollars.
+    func cost(seconds: Double) -> Double? {
+        dollarsPerSecond.map { (billsWholeSeconds ? seconds.rounded(.up) : seconds) * $0 }
+    }
+
+    /// "$3.37 a minute", or what ElevenLabs needs.
+    var priceLine: String {
+        guard let perMinute = cost(seconds: 60) else { return "Needs ElevenLabs Pro or higher" }
+        return "About \(perMinute.dollars) a minute"
+    }
+
+    static let elevenLabs = VideoModel(id: "elevenlabs", name: "ElevenLabs (Creatify Aurora)",
+                                       strength: "Uses your ElevenLabs plan's credits", falEndpoint: nil)
+
+    static let fal: [VideoModel] = [
+        VideoModel(id: "kling-standard", name: "Kling Avatar v2 Standard",
+                   strength: "Everyday pearls, the cheapest",
+                   falEndpoint: "fal-ai/kling-video/ai-avatar/v2/standard", dollarsPerSecond: 0.0562),
+        VideoModel(id: "kling-pro", name: "Kling Avatar v2 Pro",
+                   strength: "Sharper Kling",
+                   falEndpoint: "fal-ai/kling-video/ai-avatar/v2/pro", dollarsPerSecond: 0.115),
+        VideoModel(id: "aurora-480p", name: "Creatify Aurora, 480p",
+                   strength: "The model ElevenLabs uses, smaller picture",
+                   falEndpoint: "fal-ai/creatify/aurora", falInput: ["resolution": "480p"],
+                   dollarsPerSecond: 0.07, billsWholeSeconds: true),
+        VideoModel(id: "aurora-720p", name: "Creatify Aurora, 720p",
+                   strength: "The model ElevenLabs uses",
+                   falEndpoint: "fal-ai/creatify/aurora", falInput: ["resolution": "720p"],
+                   dollarsPerSecond: 0.14, billsWholeSeconds: true),
+        VideoModel(id: "omnihuman", name: "OmniHuman 1.5",
+                   strength: "Most lifelike gestures; pearls up to 1 minute",
+                   falEndpoint: "fal-ai/bytedance/omnihuman/v1.5", falInput: ["resolution": "720p"],
+                   dollarsPerSecond: 0.16, maxSeconds: 60),
+    ]
+
+    static let all = fal + [elevenLabs]
+    static let standard = fal[0]
+
+    static func withID(_ id: String?) -> VideoModel {
+        all.first { $0.id == id } ?? standard
+    }
+
+    /// The name of the fal.ai model a video was made with.
+    static func name(ofEndpoint endpoint: String) -> String {
+        let name = fal.first { $0.falEndpoint == endpoint }?.name ?? endpoint
+        // Both Aurora sizes share one model.
+        return name.components(separatedBy: ",").first ?? name
+    }
+}
+
+/// ElevenLabs or fal.ai gave up on a video. Unlike a lost connection, there's
+/// nothing left to collect.
 struct VideoFailed: LocalizedError {
     let message: String
 
     var errorDescription: String? { message }
 }
 
-/// A video ElevenLabs is making: still going, or finished with a download link.
+/// A video ElevenLabs or fal.ai is making: still going, or finished with a
+/// download link.
 enum VideoGeneration {
     case working
     case finished(URL)
