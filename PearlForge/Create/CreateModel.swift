@@ -258,9 +258,14 @@ final class CreateModel {
                     mode: mode, notes: notes, voiceID: voiceID)
                 recordingID = entry.id
                 pearlID = pearl.id
-                // Sort recordings into topics in the background; it doesn't hold anything up.
+                // Sort recordings into topics, and write an English version of
+                // a pearl in another language, in the background; neither holds
+                // anything up.
                 if input == .record, let polisher {
                     Task { await library.sortIntoTopics(entry.id, with: polisher) }
+                }
+                if refinement != nil, let polisher {
+                    Task { await library.addEnglishIfMissing(to: pearl.id, in: entry.id, with: polisher) }
                 }
                 refinedText = refinement?.text ?? transcript
                 refinedMode = mode

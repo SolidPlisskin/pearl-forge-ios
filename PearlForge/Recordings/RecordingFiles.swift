@@ -31,9 +31,12 @@ struct Pearl: Codable, Identifiable, Equatable {
     var videoCredits: Int? = nil
     var videoCost: Double? = nil
     var videoSeconds: Double? = nil
+    /// The pearl in English, for a pearl written in another language, so you
+    /// can tell what it (and its video) says. Cleared when the text changes.
+    var english: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, number, created, mode, notes, polisher
+        case id, number, created, mode, notes, polisher, english
         case refinedBy = "refined_by"
         case voiceID = "voice_id"
         case textFile = "text_file"
@@ -251,6 +254,55 @@ struct RecordingEntry: Codable, Identifiable, Equatable {
     /// The newest pearl's text, or what you said if there's no pearl yet.
     var latestText: String {
         pearlsNewestFirst.first.flatMap { pearlTexts[$0.id] } ?? transcript
+    }
+
+    // MARK: Languages and videos
+
+    /// The title in your language. A recording is titled from its first
+    /// pearl, so one first spoken in French gets a French title; then the
+    /// start of what you said or wrote, or the pearl's English version, is
+    /// used instead.
+    var displayTitle: String {
+        let saved = meta.title
+        guard TextLanguage.isOther(saved) else { return saved.isEmpty ? "Untitled thought" : saved }
+        if let lecture = meta.lecture { return lecture.topic }
+        if !transcript.isEmpty && !TextLanguage.isOther(transcript) { return RecordingFiles.title(for: transcript) }
+        if let english = meta.pearls.min(by: { $0.number < $1.number })?.english {
+            return RecordingFiles.title(for: english)
+        }
+        return saved
+    }
+
+    /// The pearl's language when it isn't yours: "Korean".
+    func otherLanguage(of pearl: Pearl) -> String? {
+        pearlTexts[pearl.id].flatMap(TextLanguage.other)
+    }
+
+    /// The pearl's text when it's in your language, otherwise its English
+    /// version if it has one.
+    func readableText(of pearl: Pearl) -> String? {
+        otherLanguage(of: pearl) == nil ? pearlTexts[pearl.id] : pearl.english
+    }
+
+    /// The other languages its pearls are in, in pearl order: ["French", "Korean"].
+    var otherLanguages: [String] {
+        var names: [String] = []
+        for pearl in meta.pearls.sorted(by: { $0.number < $1.number }) {
+            if let name = otherLanguage(of: pearl), !names.contains(name) { names.append(name) }
+        }
+        return names
+    }
+
+    /// Pearls with a video, or a video still to collect, newest first.
+    var videoPearls: [Pearl] {
+        pearlsNewestFirst.filter { $0.videoFile != nil || $0.videoGenerationID != nil }
+    }
+
+    /// Pearls in another language with no English version yet. Lectures are
+    /// left out: they're long, so you ask for theirs on the pearl itself.
+    var pearlsMissingEnglish: [Pearl] {
+        guard meta.lecture == nil else { return [] }
+        return meta.pearls.filter { $0.english == nil && otherLanguage(of: $0) != nil }
     }
 }
 

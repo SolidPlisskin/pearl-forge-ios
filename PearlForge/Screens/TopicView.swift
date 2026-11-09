@@ -37,7 +37,7 @@ final class TopicQueue {
         self.library = library
         items = entries.compactMap { entry in
             entry.latestSpokenPearl?.audioFile.map {
-                Item(entryID: entry.id, title: entry.meta.title.isEmpty ? "Untitled thought" : entry.meta.title, audioFile: $0)
+                Item(entryID: entry.id, title: entry.displayTitle, audioFile: $0)
             }
         }
         index = 0
@@ -107,7 +107,7 @@ struct TopicView: View {
                 ForEach(entries) { entry in
                     NavigationLink(value: entry.id) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(entry.meta.title.isEmpty ? "Untitled thought" : entry.meta.title)
+                            Text(entry.displayTitle)
                                 .font(.headline)
                                 .lineLimit(2)
                             if let gist = entry.meta.gist, !gist.isEmpty {
@@ -135,7 +135,7 @@ struct TopicView: View {
                         Button {
                             if let url = URL(string: item.reference.url) { opened = WebPage(url: url) }
                         } label: {
-                            ReferenceRow(reference: item.reference, fromTitle: item.entry.meta.title)
+                            ReferenceRow(reference: item.reference, fromTitle: item.entry.displayTitle)
                         }
                     }
                 }

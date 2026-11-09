@@ -46,16 +46,38 @@ enum TranslationPrompt {
         Output only the translation: no quotation marks, notes, alternatives or pronunciation guides.
         """
     }
+
+    /// For a pearl's English version: what the user's voice says in a
+    /// language they don't speak, so they can follow it.
+    static let english = """
+        Translate the user's text into English. It was written for them in another language and spoken in their own cloned voice, and they don't speak that language, so this is how they'll know exactly what they're saying.
+
+        - Keep the meaning exactly. Don't add, drop, soften, strengthen or explain anything; keep the first person, the tone and any hedging.
+        - Translate idioms and wordplay by meaning, as an English speaker would naturally say them.
+        - Keep names of people and places as they are.
+
+        Output only the translation: no quotation marks, notes, alternatives or romanization.
+        """
 }
 
 extension Forge {
     /// Translates text into a language with the chosen AI, keeping its meaning.
     static func translate(_ text: String, to language: SpeechLanguage,
                           with choice: PolisherChoice) async throws -> Refinement {
+        try await translate(text, system: TranslationPrompt.system(for: language), with: choice)
+    }
+
+    /// A pearl written in another language, in English, so you can tell what
+    /// it says.
+    static func english(of text: String, with choice: PolisherChoice) async throws -> String {
+        try await translate(text, system: TranslationPrompt.english, with: choice).text
+    }
+
+    private static func translate(_ text: String, system: String,
+                                  with choice: PolisherChoice) async throws -> Refinement {
         guard let key = KeychainStore.read(choice.provider.credential) else {
             throw PipelineError(message: "Add your \(choice.provider.name) key in the AI tab first.")
         }
-        let system = TranslationPrompt.system(for: language)
         let reply: Completion
         switch choice.provider {
         case .anthropic:

@@ -26,7 +26,7 @@ struct RecordingDetailView: View {
     private func content(_ entry: RecordingEntry) -> some View {
         Form {
             Section {
-                Text(entry.meta.title.isEmpty ? "Untitled thought" : entry.meta.title)
+                Text(entry.displayTitle)
                     .font(.headline)
                 Text(entry.meta.created.formatted(date: .complete, time: .shortened))
                     .foregroundStyle(.secondary)
@@ -81,7 +81,7 @@ struct RecordingDetailView: View {
                         PearlView(entryID: entry.id, pearlID: pearl.id, library: library,
                                   settings: settings, polishers: polishers, player: player)
                     } label: {
-                        PearlRow(pearl: pearl, text: entry.pearlTexts[pearl.id] ?? "", polishers: polishers)
+                        PearlRow(entry: entry, pearl: pearl, library: library, polishers: polishers)
                     }
                 }
                 if entry.meta.lecture == nil {
@@ -260,38 +260,83 @@ struct RecordingDetailView: View {
     }
 }
 
-/// A pearl in the list: its number, mode and AI, your request, and how it
-/// starts.
+/// A pearl in the list: a still from its video if it has one, its number,
+/// mode and language, its AI, your request, and how it starts (in English
+/// when it's in another language, with the original underneath).
 private struct PearlRow: View {
+    let entry: RecordingEntry
     let pearl: Pearl
-    let text: String
+    let library: RecordingLibrary
     let polishers: PolishersModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Pearl \(pearl.number) · \(pearl.mode.title)")
-                .font(.headline)
-            if let by = polishedBy(pearl, polishers: polishers) {
-                Text(by)
+        let text = entry.pearlTexts[pearl.id] ?? ""
+        let language = entry.otherLanguage(of: pearl)
+        HStack(alignment: .top, spacing: 12) {
+            if pearl.videoFile != nil || pearl.videoGenerationID != nil {
+                VideoStill(entryID: entry.id, pearl: pearl, library: library, width: 48, height: 64)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Pearl \(pearl.number) · \(pearl.mode.title)")
+                    .font(.headline)
+                if let by = polishedBy(pearl, polishers: polishers) {
+                    Text(by)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let notes = pearl.notes, !notes.isEmpty, !Self.isLanguageRequest(notes) {
+                    Text("“\(notes)”")
+                        .font(.subheadline)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if language != nil, let english = pearl.english {
+                    Text(english)
+                        .font(.subheadline)
+                        .lineLimit(2)
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(text)
+                        .font(.subheadline)
+                        .lineLimit(2)
+                    if library.translating.contains(pearl.id) {
+                        Text("Writing it in English…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if language != nil || pearl.videoFile != nil || pearl.videoGenerationID != nil
+                    || library.videoWork[pearl.id] != nil {
+                    FlowLayout(spacing: 6) {
+                        if let language {
+                            Badge(text: language, symbol: "globe", color: .blue)
+                        }
+                        if library.videoWork[pearl.id] != nil {
+                            Badge(text: "Making video", symbol: "hourglass", color: .orange)
+                        } else if pearl.videoGenerationID != nil {
+                            Badge(text: "Video to collect", symbol: "arrow.down.circle", color: .orange)
+                        } else if pearl.videoFile != nil {
+                            Badge(text: "Video", symbol: "film", color: .purple)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                Text(pearl.created.formatted(date: .abbreviated, time: .shortened)
+                     + (pearl.audioFile == nil ? " · no audio yet" : ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let notes = pearl.notes, !notes.isEmpty {
-                Text("“\(notes)”")
-                    .font(.subheadline)
-                    .italic()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            Text(text)
-                .font(.subheadline)
-                .lineLimit(2)
-            Text(pearl.created.formatted(date: .abbreviated, time: .shortened)
-                 + (pearl.audioFile == nil ? " · no audio yet" : ""))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+
+    /// The request Pearl Forge adds for "Speak in"; the language badge says it.
+    private static func isLanguageRequest(_ notes: String) -> Bool {
+        SpeechLanguages.all.contains { SpeechLanguages.request(for: $0) == notes }
     }
 }
 

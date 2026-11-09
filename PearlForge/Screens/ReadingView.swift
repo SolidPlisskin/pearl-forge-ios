@@ -48,7 +48,7 @@ struct ReadingView: View {
                     Button {
                         if let url = URL(string: item.reference.url) { opened = WebPage(url: url) }
                     } label: {
-                        ReferenceRow(reference: item.reference, fromTitle: item.entry.meta.title)
+                        ReferenceRow(reference: item.reference, fromTitle: item.entry.displayTitle)
                     }
                     .contextMenu {
                         if let url = URL(string: item.reference.url) {

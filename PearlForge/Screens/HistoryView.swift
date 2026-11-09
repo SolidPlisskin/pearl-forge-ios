@@ -1,10 +1,17 @@
 import SwiftUI
 
-/// Every saved recording, newest first, with search and favorites, or
-/// gathered by topic.
+/// Identifies a pearl's page in History's navigation.
+struct PearlRoute: Hashable {
+    let entryID: String
+    let pearlID: UUID
+}
+
+/// Every saved recording, newest first, with search and favorites; every
+/// video you've made; or recordings gathered by topic.
 struct HistoryView: View {
     enum Mode: String, CaseIterable {
         case recordings = "Recordings"
+        case videos = "Videos"
         case topics = "Topics"
     }
 
@@ -18,11 +25,22 @@ struct HistoryView: View {
     @State private var favoritesOnly = false
     @State private var pendingDelete: RecordingEntry?
     @State private var deleteError: String?
+    @State private var player = AudioPlayback()
+    @State private var playingVideo: PlayingVideo?
+    @State private var loadingVideo: UUID?
+    @State private var videoError: String?
 
     private var shown: [RecordingEntry] {
         library.entries.filter { entry in
             (!favoritesOnly || entry.meta.favorite) && (search.isEmpty || matches(entry, search))
         }
+    }
+
+    /// Every pearl with a video (or one still to collect), newest first.
+    private var videos: [(entry: RecordingEntry, pearl: Pearl)] {
+        library.entries.flatMap { entry in entry.videoPearls.map { (entry: entry, pearl: $0) } }
+            .filter { search.isEmpty || matches($0.entry, search) }
+            .sorted { $0.pearl.created > $1.pearl.created }
     }
 
     var body: some View {
@@ -42,10 +60,10 @@ struct HistoryView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
 
-                if mode == .topics {
-                    topicsContent
-                } else {
-                    recordingsContent
+                switch mode {
+                case .recordings: recordingsContent
+                case .videos: videosContent
+                case .topics: topicsContent
                 }
             }
             .overlay {
@@ -55,6 +73,11 @@ struct HistoryView: View {
                     } description: {
                         Text("Every thought you refine is saved here: the original recording and each pearl you forge from it.")
                     }
+                } else if mode == .videos && videos.isEmpty && !search.isEmpty {
+                    ContentUnavailableView.search(text: search)
+                } else if mode == .videos && videos.isEmpty {
+                    ContentUnavailableView("No videos yet", systemImage: "film",
+                                           description: Text("Open a pearl and choose Make video, or add one you made elsewhere. Every video shows up here."))
                 } else if mode == .recordings && shown.isEmpty && !search.isEmpty {
                     ContentUnavailableView.search(text: search)
                 } else if mode == .recordings && shown.isEmpty {
@@ -63,7 +86,7 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("History")
-            .searchable(text: $search, prompt: mode == .topics ? "Search topics" : "Search your thoughts")
+            .searchable(text: $search, prompt: mode == .topics ? "Search topics" : "Search your thoughts, in any language")
             .refreshable { await library.refresh() }
             .toolbar {
                 if mode == .recordings {
@@ -82,6 +105,19 @@ struct HistoryView: View {
             }
             .navigationDestination(for: TopicRoute.self) { route in
                 TopicView(topic: route.name, library: library)
+            }
+            .navigationDestination(for: PearlRoute.self) { route in
+                PearlView(entryID: route.entryID, pearlID: route.pearlID, library: library,
+                          settings: settings, polishers: polishers, player: player)
+            }
+            .fullScreenCover(item: $playingVideo) { video in
+                VideoPlayerScreen(video: video)
+            }
+            .alert("Couldn't play the video", isPresented: Binding(get: { videoError != nil },
+                                                                    set: { if !$0 { videoError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(videoError ?? "")
             }
             .confirmationDialog("Delete this recording?",
                                 isPresented: Binding(get: { pendingDelete != nil },
@@ -113,9 +149,10 @@ struct HistoryView: View {
 
     @ViewBuilder
     private var recordingsContent: some View {
+                englishSection
                 ForEach(shown) { entry in
                     NavigationLink(value: entry.id) {
-                        HistoryRow(entry: entry)
+                        HistoryRow(entry: entry, library: library)
                     }
                     .swipeActions(edge: .leading) {
                         Button {
@@ -135,6 +172,65 @@ struct HistoryView: View {
                         .tint(.red)
                     }
                 }
+    }
+
+    /// Offers English versions for pearls in other languages made before
+    /// Pearl Forge wrote them automatically.
+    @ViewBuilder
+    private var englishSection: some View {
+        let missing = library.pearlsMissingEnglish.count
+        if missing > 0 && search.isEmpty && !favoritesOnly {
+            Section {
+                if !library.translating.isEmpty {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Writing English versions…")
+                    }
+                } else if let choice = polishers.activeChoice {
+                    Button {
+                        Task { await library.addEnglishToAll(with: choice) }
+                    } label: {
+                        Label(missing == 1 ? "Add English to 1 pearl in another language"
+                                           : "Add English to \(missing) pearls in other languages",
+                              systemImage: "character.bubble")
+                    }
+                } else {
+                    Button("Choose an AI in the AI tab to see pearls in English") { openTab(.ai) }
+                }
+            } footer: {
+                if let error = library.translationErrors.values.first {
+                    Text(error).foregroundStyle(.red)
+                } else if let choice = polishers.activeChoice {
+                    Text("So you can tell what pearls in other languages say. New ones get theirs automatically. Uses \(polishers.label(for: choice)), about a cent a pearl.")
+                }
+            }
+        }
+    }
+
+    // MARK: Videos
+
+    @ViewBuilder
+    private var videosContent: some View {
+        ForEach(videos, id: \.pearl.id) { item in
+            NavigationLink(value: PearlRoute(entryID: item.entry.id, pearlID: item.pearl.id)) {
+                VideoRow(entry: item.entry, pearl: item.pearl, library: library,
+                         isLoading: loadingVideo == item.pearl.id) {
+                    Task { await play(item.pearl.id, in: item.entry.id) }
+                }
+            }
+        }
+    }
+
+    private func play(_ pearlID: UUID, in entryID: String) async {
+        guard loadingVideo == nil else { return }
+        loadingVideo = pearlID
+        defer { loadingVideo = nil }
+        do {
+            player.pause()
+            playingVideo = try await PlayingVideo.load(pearlID, in: entryID, library: library)
+        } catch {
+            videoError = error.localizedDescription
+        }
     }
 
     // MARK: Topics
@@ -185,34 +281,77 @@ struct HistoryView: View {
     }
 
     private func matches(_ entry: RecordingEntry, _ query: String) -> Bool {
-        ([entry.meta.title, entry.transcript, entry.meta.gist ?? ""] + (entry.meta.categories ?? []) + Array(entry.pearlTexts.values))
+        ([entry.meta.title, entry.displayTitle, entry.transcript, entry.meta.gist ?? ""] + (entry.meta.categories ?? [])
+         + Array(entry.pearlTexts.values) + entry.meta.pearls.compactMap(\.english) + entry.otherLanguages)
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
 }
 
-/// A recording in the list: its title, when it was made, and how many pearls.
+/// A recording in the list: a still from its newest video (or what kind of
+/// recording it is), its title in your language, when it was made, how many
+/// pearls, and badges for its videos and the languages its pearls are in.
 private struct HistoryRow: View {
     let entry: RecordingEntry
+    let library: RecordingLibrary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(entry.meta.title.isEmpty ? "Untitled thought" : entry.meta.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                if entry.meta.favorite {
-                    Spacer()
-                    Image(systemName: "star.fill")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                        .accessibilityLabel("Favorite")
+        HStack(alignment: .top, spacing: 12) {
+            tile
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(entry.displayTitle)
+                        .font(.headline)
+                        .lineLimit(2)
+                    if entry.meta.favorite {
+                        Spacer()
+                        Image(systemName: "star.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                            .accessibilityLabel("Favorite")
+                    }
                 }
+                Text("\(entry.meta.created.formatted(date: .abbreviated, time: .shortened)) · \(pearlCount)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                badges
             }
-            Text("\(entry.meta.created.formatted(date: .abbreviated, time: .shortened)) · \(pearlCount)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var tile: some View {
+        if let video = entry.videoPearls.first(where: { $0.videoFile != nil }) ?? entry.videoPearls.first {
+            VideoStill(entryID: entry.id, pearl: video, library: library, width: 50, height: 50)
+        } else {
+            Image(systemName: entry.meta.lecture != nil ? "graduationcap" : entry.meta.isTyped ? "keyboard" : "waveform")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 50, height: 50)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var badges: some View {
+        let made = entry.videoPearls.filter { $0.videoFile != nil }.count
+        let waiting = entry.videoPearls.filter { $0.videoGenerationID != nil }.count
+        let languages = entry.otherLanguages
+        if made + waiting > 0 || !languages.isEmpty {
+            FlowLayout(spacing: 6) {
+                if made > 0 {
+                    Badge(text: made == 1 ? "Video" : "\(made) videos", symbol: "film", color: .purple)
+                }
+                if waiting > 0 {
+                    Badge(text: waiting == 1 ? "Video to collect" : "\(waiting) videos to collect",
+                          symbol: "arrow.down.circle", color: .orange)
+                }
+                ForEach(languages, id: \.self) { language in
+                    Badge(text: language, symbol: "globe", color: .blue)
+                }
+            }
+        }
     }
 
     private var pearlCount: String {
@@ -224,6 +363,92 @@ private struct HistoryRow: View {
         }
         guard let topics = entry.meta.categories, !topics.isEmpty else { return pearls }
         return pearls + " · " + topics.joined(separator: ", ")
+    }
+}
+
+/// A video in the Videos list: its still (tap to play), the recording's
+/// title, the pearl and language, what it says in English, and what it cost.
+private struct VideoRow: View {
+    let entry: RecordingEntry
+    let pearl: Pearl
+    let library: RecordingLibrary
+    let isLoading: Bool
+    let play: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Button(action: play) {
+                VideoStill(entryID: entry.id, pearl: pearl, library: library, width: 66, height: 88)
+                    .overlay {
+                        if isLoading {
+                            ProgressView()
+                                .tint(.white)
+                                .frame(width: 66, height: 88)
+                                .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+            }
+            .buttonStyle(.borderless)
+            .disabled(pearl.videoFile == nil)
+            .accessibilityLabel("Play video")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.displayTitle)
+                    .font(.headline)
+                    .lineLimit(2)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let words = entry.readableText(of: pearl) {
+                    Text(words)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else if let language = entry.otherLanguage(of: pearl) {
+                    Text("In \(language). Open it to see it in English.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                if library.videoWork[pearl.id] != nil {
+                    Badge(text: "Being made", symbol: "hourglass", color: .orange)
+                } else if pearl.videoGenerationID != nil {
+                    Badge(text: "Not collected yet: open to collect", symbol: "arrow.down.circle", color: .orange)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// "Pearl 2 · Korean · Kling Avatar v2 Standard · $1.05 · Nov 6"
+    private var detail: String {
+        var parts = ["Pearl \(pearl.number)"]
+        if let language = entry.otherLanguage(of: pearl) { parts.append(language) }
+        if let endpoint = pearl.videoModel {
+            parts.append(VideoModel.name(ofEndpoint: endpoint))
+            if let cost = pearl.videoCost { parts.append(cost.dollars) }
+        } else if pearl.videoCredits != nil {
+            parts.append("ElevenLabs")
+        }
+        parts.append(pearl.created.formatted(date: .abbreviated, time: .omitted))
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// A small coloured label: "Video", "Korean".
+struct Badge: View {
+    let text: String
+    let symbol: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(text)
+        }
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.14), in: Capsule())
     }
 }
 

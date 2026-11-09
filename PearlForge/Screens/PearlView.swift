@@ -1,4 +1,3 @@
-import AVKit
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -22,7 +21,7 @@ struct PearlView: View {
     @State private var quotedModel: VideoModel?
     @State private var pickedVideo: PhotosPickerItem?
     @State private var importingVideo = false
-    @State private var playingVideo: VideoLink?
+    @State private var playingVideo: PlayingVideo?
     @State private var videoActionError: String?
     @FocusState private var editing: Bool
     @Environment(\.dismiss) private var dismiss
@@ -43,6 +42,9 @@ struct PearlView: View {
         return Form {
             Section {
                 LabeledContent("Mode", value: pearl.mode.title)
+                if let language = entry.otherLanguage(of: pearl) {
+                    LabeledContent("Language", value: language)
+                }
                 if let notes = pearl.notes, !notes.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Your request")
@@ -88,6 +90,10 @@ struct PearlView: View {
 
             videoSection(entry, pearl, isBusy: isBusy)
 
+            if let language = entry.otherLanguage(of: pearl) {
+                englishSection(pearl, language: language, isEdited: isEdited)
+            }
+
             Section {
                 TextEditor(text: $text)
                     .frame(minHeight: 200)
@@ -108,7 +114,7 @@ struct PearlView: View {
                     }
                 }
             } header: {
-                Text("Refined text")
+                Text(entry.otherLanguage(of: pearl).map { "Refined text · \($0)" } ?? "Refined text")
             } footer: {
                 Text("If anything's off, fix it here, then regenerate the audio.")
             }
@@ -173,7 +179,7 @@ struct PearlView: View {
             Text(videoQuote ?? "")
         }
         .fullScreenCover(item: $playingVideo) { video in
-            VideoPlayerScreen(url: video.url)
+            VideoPlayerScreen(video: video)
         }
         .onAppear {
             if !didLoadText {
@@ -199,6 +205,43 @@ struct PearlView: View {
         }
     }
 
+    // MARK: English
+
+    /// What a pearl in another language says, in English.
+    private func englishSection(_ pearl: Pearl, language: String, isEdited: Bool) -> some View {
+        Section {
+            if library.translating.contains(pearlID) {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Writing it in English…")
+                }
+            } else if let english = pearl.english {
+                Text(english)
+                    .textSelection(.enabled)
+            } else if let choice = polishers.activeChoice {
+                Button {
+                    Task { await library.addEnglish(to: pearlID, in: entryID, with: choice) }
+                } label: {
+                    Label("Show it in English", systemImage: "character.bubble")
+                }
+                .disabled(isEdited)
+            } else {
+                Text("Choose an AI in the AI tab to see this pearl in English.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("In English")
+        } footer: {
+            if let error = library.translationErrors[pearlID] {
+                Text(error).foregroundStyle(.red)
+            } else if pearl.english != nil {
+                Text("What this pearl says in \(language), translated back so you can follow it. Your pearl itself isn't changed.")
+            } else if let choice = polishers.activeChoice {
+                Text("\(polishers.label(for: choice)) translates this \(language) pearl back into English so you know what it says. It's saved with the pearl; a short pearl costs about a cent.")
+            }
+        }
+    }
+
     // MARK: Video
 
     private func videoSection(_ entry: RecordingEntry, _ pearl: Pearl, isBusy: Bool) -> some View {
@@ -217,8 +260,27 @@ struct PearlView: View {
                     Button {
                         Task { await playVideo() }
                     } label: {
-                        Label("Play video", systemImage: "play.rectangle.fill")
+                        HStack(spacing: 14) {
+                            VideoStill(entryID: entryID, pearl: pearl, library: library, width: 72, height: 96)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Play video")
+                                    .foregroundStyle(.primary)
+                                if let seconds = pearl.videoSeconds {
+                                    Text(Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond)))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if entry.otherLanguage(of: pearl) != nil {
+                                    Text(pearl.english == nil ? "Shows the \(entry.otherLanguage(of: pearl) ?? "") text as you watch"
+                                                              : "Shows what you're saying in English as you watch")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     Button {
                         Task { await shareVideo() }
                     } label: {
@@ -350,7 +412,7 @@ struct PearlView: View {
         videoActionError = nil
         do {
             player.pause()
-            playingVideo = VideoLink(url: try await library.videoCopy(of: pearlID, in: entryID))
+            playingVideo = try await PlayingVideo.load(pearlID, in: entryID, library: library)
         } catch {
             videoActionError = "Couldn't open the video: \(error.localizedDescription)"
         }
@@ -371,6 +433,10 @@ struct PearlView: View {
             text = newText.trimmingCharacters(in: .whitespacesAndNewlines)
             player.load(audio, key: pearlID.uuidString)
             player.play()
+            // Edited text loses its English version; write a fresh one.
+            if let choice = polishers.activeChoice {
+                await library.addEnglishIfMissing(to: pearlID, in: entryID, with: choice)
+            }
         }
     }
 
@@ -393,39 +459,6 @@ struct PearlView: View {
         else { return }
         while let presented = top.presentedViewController { top = presented }
         top.present(UIActivityViewController(activityItems: [url], applicationActivities: nil), animated: true)
-    }
-}
-
-/// A video ready to play, for presenting the player.
-private struct VideoLink: Identifiable {
-    let url: URL
-    var id: URL { url }
-}
-
-/// Plays a pearl's video full screen.
-private struct VideoPlayerScreen: View {
-    let url: URL
-
-    @State private var player: AVPlayer?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            VideoPlayer(player: player)
-                .ignoresSafeArea(edges: .bottom)
-                .background(.black)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { dismiss() }
-                    }
-                }
-        }
-        .onAppear {
-            let player = AVPlayer(url: url)
-            self.player = player
-            player.play()
-        }
-        .onDisappear { player?.pause() }
     }
 }
 

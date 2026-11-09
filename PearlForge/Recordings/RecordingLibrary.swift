@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Observation
 import UIKit
@@ -21,6 +22,11 @@ final class RecordingLibrary {
     /// What's happening with a pearl's video being made right now, per pearl.
     private(set) var videoWork: [UUID: String] = [:]
     private(set) var videoErrors: [UUID: String] = [:]
+    /// Goes up each time a pearl's video changes, so its still is redrawn.
+    private(set) var videoRevisions: [UUID: Int] = [:]
+    /// Pearls whose English version is being written right now.
+    private(set) var translating: Set<UUID> = []
+    private(set) var translationErrors: [UUID: String] = [:]
     /// Recordings being sorted into topics right now.
     private(set) var sorting: Set<String> = []
     private(set) var sortErrors: [String: String] = [:]
@@ -45,6 +51,10 @@ final class RecordingLibrary {
 
     private static var indexURL: URL {
         URL.applicationSupportDirectory.appending(path: "RecordingIndex.json")
+    }
+
+    nonisolated private static var thumbnailFolder: URL {
+        URL.cachesDirectory.appending(path: "VideoStills", directoryHint: .isDirectory)
     }
 
     init() {
@@ -186,6 +196,9 @@ final class RecordingLibrary {
         guard var entry = entry(entryID), let pearl = entry.pearl(pearlID) else { throw Self.missingRecording }
         try await writeText(text, file: pearl.textFile, in: entryID)
         entry.pearlTexts[pearlID] = text
+        if let index = entry.meta.pearls.firstIndex(where: { $0.id == pearlID }) {
+            entry.meta.pearls[index].english = nil
+        }
         if pearl.number == entry.meta.pearls.map(\.number).min() {
             entry.meta.title = RecordingFiles.title(for: text)
         }
@@ -257,6 +270,9 @@ final class RecordingLibrary {
             forging[entryID] = .speaking
             let audio = try await Forge.speak(refinement.text, voiceID: voiceID)
             try await setAudio(audio, of: pearl.id, in: entryID, voiceID: voiceID)
+            // A pearl in another language gets its English version in the
+            // background; it doesn't hold up playing it.
+            Task { await addEnglishIfMissing(to: pearl.id, in: entryID, with: polisher) }
             return (self.entry(entryID)?.pearl(pearl.id) ?? pearl, audio)
         } catch {
             forgeErrors[entryID] = error.localizedDescription
@@ -318,6 +334,7 @@ final class RecordingLibrary {
             $0.videoCost = nil
             $0.videoSeconds = nil
         }
+        forgetStill(of: pearlID)
     }
 
     func removeVideo(of pearlID: UUID, in entryID: String) async throws {
@@ -331,6 +348,7 @@ final class RecordingLibrary {
             $0.videoCost = nil
             $0.videoSeconds = nil
         }
+        forgetStill(of: pearlID)
     }
 
     /// A temporary copy of a pearl's video named after the recording, for
@@ -455,6 +473,74 @@ final class RecordingLibrary {
         try await updatePearl(pearlID, in: entryID) {
             $0.videoFile = file
             $0.videoGenerationID = nil
+        }
+        forgetStill(of: pearlID)
+    }
+
+    /// A still from a pearl's video for the library, made once and kept in
+    /// the app's caches. Nil while the video is only in iCloud, so browsing
+    /// doesn't download every video.
+    func videoStill(of pearlID: UUID, in entryID: String) async -> UIImage? {
+        guard let file = entry(entryID)?.pearl(pearlID)?.videoFile else { return nil }
+        let video = root.appending(path: entryID).appending(path: file)
+        let still = Self.thumbnailFolder.appending(path: pearlID.uuidString + ".jpg")
+        return await Task.detached {
+            if let saved = UIImage(contentsOfFile: still.path) { return saved }
+            guard CoordinatedFiles.isDownloaded(video) else { return nil }
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 300, height: 300)
+            // A moment in, past any fade from black.
+            guard let frame = try? await generator.image(at: CMTime(seconds: 0.5, preferredTimescale: 600)).image
+            else { return nil }
+            let image = UIImage(cgImage: frame)
+            try? FileManager.default.createDirectory(at: Self.thumbnailFolder, withIntermediateDirectories: true)
+            try? image.jpegData(compressionQuality: 0.8)?.write(to: still, options: .atomic)
+            return image
+        }.value
+    }
+
+    private func forgetStill(of pearlID: UUID) {
+        try? FileManager.default.removeItem(at: Self.thumbnailFolder.appending(path: pearlID.uuidString + ".jpg"))
+        videoRevisions[pearlID, default: 0] += 1
+    }
+
+    // MARK: English versions
+
+    /// Every pearl in another language that has no English version yet.
+    var pearlsMissingEnglish: [(entryID: String, pearlID: UUID)] {
+        entries.flatMap { entry in entry.pearlsMissingEnglish.map { (entryID: entry.id, pearlID: $0.id) } }
+    }
+
+    /// Has the AI write a pearl's English version and saves it with the
+    /// pearl. Failures are kept in `translationErrors`.
+    func addEnglish(to pearlID: UUID, in entryID: String, with choice: PolisherChoice) async {
+        guard !translating.contains(pearlID), let text = entry(entryID)?.pearlTexts[pearlID], !text.isEmpty
+        else { return }
+        translating.insert(pearlID)
+        translationErrors[pearlID] = nil
+        defer { translating.remove(pearlID) }
+        do {
+            let english = try await Forge.english(of: text, with: choice)
+            // Only if the text wasn't edited in the meantime.
+            guard entry(entryID)?.pearlTexts[pearlID] == text else { return }
+            try await updatePearl(pearlID, in: entryID) { $0.english = english }
+        } catch {
+            translationErrors[pearlID] = error.localizedDescription
+        }
+    }
+
+    /// Adds an English version to a new pearl when it's in another language.
+    func addEnglishIfMissing(to pearlID: UUID, in entryID: String, with choice: PolisherChoice) async {
+        guard let entry = entry(entryID), entry.pearlsMissingEnglish.contains(where: { $0.id == pearlID })
+        else { return }
+        await addEnglish(to: pearlID, in: entryID, with: choice)
+    }
+
+    /// Adds English versions to every pearl missing one, one at a time.
+    func addEnglishToAll(with choice: PolisherChoice) async {
+        for item in pearlsMissingEnglish {
+            await addEnglish(to: item.pearlID, in: item.entryID, with: choice)
         }
     }
 
