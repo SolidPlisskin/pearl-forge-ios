@@ -724,7 +724,7 @@ private struct LevelMeter: View {
     }
 }
 
-/// Play/pause, a scrubber, and the elapsed and total time.
+/// Play/pause, a scrubber, the elapsed and total time, and where it's playing.
 struct PlayerRow: View {
     let player: AudioPlayback
 
@@ -746,6 +746,8 @@ struct PlayerRow: View {
                        in: 0...max(player.duration, 0.1))
                 HStack {
                     Text(timeString(player.currentTime))
+                    Spacer()
+                    AudioOutputButton()
                     Spacer()
                     Text(timeString(player.duration))
                 }

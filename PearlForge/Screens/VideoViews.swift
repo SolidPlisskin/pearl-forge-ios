@@ -78,30 +78,36 @@ struct VideoPlayerScreen: View {
         NavigationStack {
             VStack(spacing: 0) {
                 VideoPlayer(player: player)
-                if let words {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(wordsLabel)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if let language = video.language, video.english != nil {
-                                    Button(showingOriginal ? "Show English" : "Show \(language)") {
-                                        showingOriginal.toggle()
+                VStack(alignment: .leading, spacing: 0) {
+                    AudioOutputButton()
+                        .padding([.horizontal, .top])
+                        .padding(.bottom, words == nil ? 16 : 0)
+                    if let words {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(wordsLabel)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    if let language = video.language, video.english != nil {
+                                        Button(showingOriginal ? "Show English" : "Show \(language)") {
+                                            showingOriginal.toggle()
+                                        }
+                                        .font(.caption)
                                     }
-                                    .font(.caption)
                                 }
+                                Text(words)
+                                    .textSelection(.enabled)
                             }
-                            Text(words)
-                                .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                        .frame(maxHeight: 240)
                     }
-                    .frame(maxHeight: 240)
-                    .background(Color(white: 0.11))
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(white: 0.11))
             }
             .background(.black)
             .environment(\.colorScheme, .dark)
@@ -112,6 +118,7 @@ struct VideoPlayerScreen: View {
             }
         }
         .onAppear {
+            try? AudioSession.activateForPlayback()
             let player = AVPlayer(url: video.url)
             self.player = player
             player.play()

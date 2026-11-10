@@ -65,6 +65,7 @@ final class VoiceRecorder {
         interruptionTask?.cancel()
         isRecording = false
         level = 0
+        AudioSession.prepareForPlayback()
         return duration
     }
 
